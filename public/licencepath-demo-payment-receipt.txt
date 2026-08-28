@@ -1,0 +1,22 @@
+LICENCEPATH DEMO PAYMENT RECEIPT
+
+Independent and unofficial prototype
+No real payment was made
+
+Citizen: Asha Verma (synthetic)
+Case: LP-DEMO-20260827-0001
+Service: Learner's Licence to permanent Driving Licence
+Pilot fixture: Delhi, RTO-TEST-01
+
+Application and test fee fixture: INR 500
+Card printing fee fixture: INR 200
+Illustrative total: INR 700
+
+Payment state: Paid after reconciliation
+Mock gateway reference: MOCK-PAY-20260827-9912
+Attempts: 1
+Outcome: No duplicate charge created
+
+This receipt contains synthetic demo data only. It is not valid for any
+government, banking, payment, identity or legal purpose. LicencePath is not
+affiliated with or endorsed by any government body.
