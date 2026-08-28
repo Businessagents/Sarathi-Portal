@@ -25,15 +25,24 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import {
   beginPayment,
+  caseIssuesPhysicalCard,
+  caseRequiresAppointment,
+  configureCaseServices,
+  confirmNoFee,
+  DEMO_RULE_PACK,
   evaluateEligibility,
+  feeBreakdown,
   reconcilePayment,
+  requiredEvidence,
   submitApplication,
   type DemoCase,
+  type EvidenceId,
+  type ServiceId,
 } from "@/lib/sarathi-domain";
 
 type Language = "en" | "hi";
 type Mode = "self" | "assisted";
-type Evidence = { ll: boolean; photo: boolean; address: boolean };
+type EvidenceState = Partial<Record<EvidenceId, boolean>>;
 
 type JourneyState = {
   stage: number;
@@ -43,48 +52,83 @@ type JourneyState = {
   mode: Mode;
   acceptedNotice: boolean;
   helperConsent: boolean;
+  selectedServices: ServiceId[];
   issueDate: string;
   identityConsent: boolean;
   otp: string;
   address: string;
-  evidence: Evidence;
+  duplicateReason: "" | "lost" | "damaged";
+  newName: string;
+  newAddress: string;
+  newMobile: string;
+  mobileOtp: string;
+  evidence: EvidenceState;
   caseData: DemoCase;
   slot: string;
   outcomeIndex: number;
   grievanceId?: string;
 };
 
-const defaultCase: DemoCase = {
-  caseId: "LP-DEMO-20260827-0001",
-  llNumber: "LL-DL99-2026-000123",
-  issueDate: "2026-07-29",
-  payment: { state: "not_started", attempts: 0 },
-  submission: { state: "not_started" },
+const STORAGE_KEY = "licencepath-demo-case-v2";
+const TODAY = "2026-08-28";
+
+const serviceOrder: ServiceId[] = [
+  "ll_to_dl",
+  "duplicate",
+  "name_change",
+  "address_change",
+  "mobile_update",
+];
+
+const serviceCopy: Record<
+  ServiceId,
+  { en: string; hi: string; descriptionEn: string; descriptionHi: string }
+> = {
+  ll_to_dl: {
+    en: "Learner's Licence to permanent DL",
+    hi: "लर्नर लाइसेंस से स्थायी DL",
+    descriptionEn: "Check the waiting period, submit evidence, pay and book a driving test.",
+    descriptionHi: "प्रतीक्षा अवधि जांचें, दस्तावेज दें, भुगतान करें और ड्राइविंग टेस्ट बुक करें।",
+  },
+  duplicate: {
+    en: "Replace a lost or damaged licence",
+    hi: "खोया या खराब लाइसेंस बदलें",
+    descriptionEn: "Record the reason, attach a safe fixture and track replacement scrutiny.",
+    descriptionHi: "कारण बताएं, सुरक्षित उदाहरण जोड़ें और बदलाव की जांच देखें।",
+  },
+  name_change: {
+    en: "Change name on the licence",
+    hi: "लाइसेंस पर नाम बदलें",
+    descriptionEn: "Enter the corrected name and attach the demo change proof.",
+    descriptionHi: "सही नाम भरें और बदलाव का डेमो प्रमाण जोड़ें।",
+  },
+  address_change: {
+    en: "Change address on the licence",
+    hi: "लाइसेंस पर पता बदलें",
+    descriptionEn: "Give the new address once and add one combined address proof.",
+    descriptionHi: "नया पता एक बार दें और एक संयुक्त पता प्रमाण जोड़ें।",
+  },
+  mobile_update: {
+    en: "Update registered mobile number",
+    hi: "पंजीकृत मोबाइल नंबर बदलें",
+    descriptionEn: "Verify a synthetic new number without uploading a document.",
+    descriptionHi: "बिना दस्तावेज अपलोड किए नकली नए नंबर की पुष्टि करें।",
+  },
 };
 
-const defaultState: JourneyState = {
-  stage: 0,
-  language: "en",
-  largeText: false,
-  highContrast: false,
-  mode: "self",
-  acceptedNotice: false,
-  helperConsent: false,
-  issueDate: "2026-07-29",
-  identityConsent: false,
-  otp: "",
-  address: "18, Demo Lane, New Delhi 110001",
-  evidence: { ll: false, photo: false, address: false },
-  caseData: defaultCase,
-  slot: "",
-  outcomeIndex: 0,
+const evidenceCopy: Record<EvidenceId, { en: string; hi: string; meta: string }> = {
+  learners_licence: { en: "Learner's Licence fixture", hi: "लर्नर लाइसेंस उदाहरण", meta: "PDF, 184 KB" },
+  photo_signature: { en: "Photo and signature fixture", hi: "फोटो और हस्ताक्षर उदाहरण", meta: "JPG, 96 KB" },
+  address_proof: { en: "Address proof fixture", hi: "पता प्रमाण उदाहरण", meta: "PDF, 211 KB" },
+  licence_loss_or_damage: { en: "Loss or damaged-licence fixture", hi: "खोए या खराब लाइसेंस का उदाहरण", meta: "PDF, 156 KB" },
+  name_change_proof: { en: "Name-change proof fixture", hi: "नाम बदलाव प्रमाण उदाहरण", meta: "PDF, 203 KB" },
 };
 
 const translations = {
   en: {
     skip: "Skip to main content",
     banner: "Independent, unofficial prototype. Use synthetic data only.",
-    mock: "Mock",
+    mock: "Mock dependency",
     about: "About this prototype",
     english: "English",
     hindi: "हिंदी",
@@ -92,17 +136,16 @@ const translations = {
     contrast: "High contrast",
     help: "Get help",
     saved: "Saved on this device",
-    case: "Demo case",
-    mainJourney: "Get a permanent Driving Licence",
-    pilot: "Delhi pilot fixture",
-    next: "Continue",
+    case: "Demo application case",
+    mainJourney: "Your licence service plan",
+    pilot: "Delhi demo rule pack",
     back: "Back",
-    stages: ["Start", "Eligibility", "Identity", "Application", "Evidence", "Payment", "Submit", "Track"],
+    stages: ["Services", "Eligibility", "Identity", "Details", "Evidence", "Payment", "Submit", "Track"],
   },
   hi: {
     skip: "मुख्य सामग्री पर जाएं",
     banner: "यह स्वतंत्र और अनौपचारिक प्रोटोटाइप है। केवल नकली जानकारी का उपयोग करें।",
-    mock: "नकली",
+    mock: "नकली सेवा",
     about: "इस प्रोटोटाइप के बारे में",
     english: "English",
     hindi: "हिंदी",
@@ -110,34 +153,71 @@ const translations = {
     contrast: "अधिक कॉन्ट्रास्ट",
     help: "मदद लें",
     saved: "इस डिवाइस पर सेव है",
-    case: "डेमो केस",
-    mainJourney: "स्थायी ड्राइविंग लाइसेंस पाएं",
-    pilot: "दिल्ली पायलट उदाहरण",
-    next: "आगे बढ़ें",
+    case: "डेमो आवेदन केस",
+    mainJourney: "आपकी लाइसेंस सेवा योजना",
+    pilot: "दिल्ली डेमो नियम पैक",
     back: "पीछे",
-    stages: ["शुरू", "पात्रता", "पहचान", "आवेदन", "दस्तावेज", "भुगतान", "जमा करें", "स्थिति"],
+    stages: ["सेवाएं", "पात्रता", "पहचान", "जानकारी", "दस्तावेज", "भुगतान", "जमा करें", "स्थिति"],
   },
 } as const;
 
-const outcomeEvents = [
-  { en: "Application submitted", hi: "आवेदन जमा हुआ", owner: "LicencePath queue", time: "28 Aug, 10:42" },
-  { en: "RTO test booked", hi: "RTO टेस्ट बुक हुआ", owner: "Mock RTO", time: "28 Aug, 10:43" },
-  { en: "Driving test passed", hi: "ड्राइविंग टेस्ट पास हुआ", owner: "Mock RTO", time: "4 Sep, 12:10" },
-  { en: "Licence approved", hi: "लाइसेंस स्वीकृत हुआ", owner: "Mock Sarathi", time: "4 Sep, 12:14" },
-  { en: "Card dispatched", hi: "कार्ड भेजा गया", owner: "Mock carrier", time: "6 Sep, 09:05" },
-  { en: "Delivered and closed", hi: "डिलीवर हुआ और केस बंद", owner: "Mock carrier", time: "8 Sep, 16:22" },
-];
+function createDefaultCase(): DemoCase {
+  const base: DemoCase = {
+    caseId: "LP-DEMO-20260828-0001",
+    llNumber: "LL-DL99-2026-000123",
+    issueDate: "2026-07-29",
+    serviceRequests: [],
+    payment: { state: "not_started", attempts: 0 },
+    submission: { state: "not_started" },
+  };
+  return configureCaseServices(base, ["ll_to_dl"]);
+}
+
+function createDefaultState(): JourneyState {
+  return {
+    stage: 0,
+    language: "en",
+    largeText: false,
+    highContrast: false,
+    mode: "self",
+    acceptedNotice: false,
+    helperConsent: false,
+    selectedServices: ["ll_to_dl"],
+    issueDate: "2026-07-29",
+    identityConsent: false,
+    otp: "",
+    address: "18, Demo Lane, New Delhi 110001",
+    duplicateReason: "",
+    newName: "Asha Mehra",
+    newAddress: "42, Sample Road, New Delhi 110003",
+    newMobile: "9888800000",
+    mobileOtp: "",
+    evidence: {},
+    caseData: createDefaultCase(),
+    slot: "",
+    outcomeIndex: 0,
+  };
+}
+
+function serviceLabel(serviceId: ServiceId, language: Language) {
+  return serviceCopy[serviceId][language];
+}
 
 function paymentLabel(state: DemoCase["payment"]["state"], language: Language) {
   const labels = {
-    en: { not_started: "Not started", pending: "Pending", paid: "Paid", failed: "Failed" },
-    hi: { not_started: "शुरू नहीं हुआ", pending: "पुष्टि बाकी", paid: "भुगतान हुआ", failed: "असफल" },
+    en: { not_started: "Not started", pending: "Pending", paid: "Confirmed", failed: "Failed" },
+    hi: { not_started: "शुरू नहीं हुआ", pending: "पुष्टि बाकी", paid: "पुष्टि हुई", failed: "असफल" },
   } as const;
   return labels[language][state];
 }
 
-function MockBadge({ language }: { language: Language }) {
-  return <span className="mock-badge"><Flask aria-hidden="true" size={14} />{translations[language].mock}</span>;
+function MockBadge({ language, label }: { language: Language; label?: string }) {
+  return (
+    <span className="mock-badge">
+      <Flask aria-hidden="true" size={14} />
+      {label ?? translations[language].mock}
+    </span>
+  );
 }
 
 function Field({
@@ -163,11 +243,55 @@ function Field({
 
 function Notice({ tone = "info", children }: { tone?: "info" | "warning" | "success"; children: React.ReactNode }) {
   const Icon = tone === "warning" ? Warning : tone === "success" ? CheckCircle : Info;
-  return <div className={`notice notice-${tone}`}><Icon aria-hidden="true" size={22} weight="duotone" /><div>{children}</div></div>;
+  return (
+    <div className={`notice notice-${tone}`}>
+      <Icon aria-hidden="true" size={22} weight="duotone" />
+      <div>{children}</div>
+    </div>
+  );
 }
 
+function StageHeader({ icon: Icon, title, intro, language }: { icon: typeof Info; title: string; intro: string; language: Language }) {
+  return (
+    <header className="stage-header">
+      <div className="stage-icon"><Icon aria-hidden="true" size={28} weight="duotone" /></div>
+      <div><MockBadge language={language} label={language === "en" ? "Interactive demo" : "इंटरैक्टिव डेमो"} /><h1>{title}</h1><p>{intro}</p></div>
+    </header>
+  );
+}
+
+function buildOutcomeEvents(selectedServices: ServiceId[], language: Language) {
+  const en = language === "en";
+  const events: Array<{ label: string; owner: string; time: string }> = [
+    { label: en ? "Application case accepted" : "आवेदन केस स्वीकार हुआ", owner: "Mock workflow queue", time: "28 Aug, 10:42" },
+    { label: en ? "Combined evidence scrutinised" : "संयुक्त दस्तावेज जांचे गए", owner: "Mock RTO desk", time: "28 Aug, 10:47" },
+  ];
+
+  if (selectedServices.includes("ll_to_dl")) {
+    events.push(
+      { label: en ? "Driving test appointment confirmed" : "ड्राइविंग टेस्ट अपॉइंटमेंट पक्का हुआ", owner: "Mock appointment adapter", time: "28 Aug, 10:49" },
+      { label: en ? "Driving test passed" : "ड्राइविंग टेस्ट पास हुआ", owner: "Mock RTO", time: "4 Sep, 12:10" },
+      { label: en ? "Permanent DL approved" : "स्थायी DL स्वीकृत हुआ", owner: "Mock Sarathi adapter", time: "4 Sep, 12:14" },
+    );
+  }
+  if (selectedServices.includes("duplicate")) events.push({ label: en ? "Replacement request approved" : "बदलाव अनुरोध स्वीकृत हुआ", owner: "Mock RTO desk", time: "4 Sep, 12:18" });
+  if (selectedServices.includes("name_change")) events.push({ label: en ? "Name updated on the licence record" : "लाइसेंस रिकॉर्ड पर नाम बदला", owner: "Mock Sarathi adapter", time: "4 Sep, 12:20" });
+  if (selectedServices.includes("address_change")) events.push({ label: en ? "Address updated on the licence record" : "लाइसेंस रिकॉर्ड पर पता बदला", owner: "Mock Sarathi adapter", time: "4 Sep, 12:22" });
+  if (selectedServices.includes("mobile_update")) events.push({ label: en ? "Registered mobile number updated" : "पंजीकृत मोबाइल नंबर बदला", owner: "Mock notification adapter", time: "4 Sep, 12:23" });
+  if (caseIssuesPhysicalCard(selectedServices)) {
+    events.push(
+      { label: en ? "Licence card dispatched" : "लाइसेंस कार्ड भेजा गया", owner: "Mock dispatch adapter", time: "6 Sep, 09:05" },
+      { label: en ? "Card delivered" : "कार्ड डिलीवर हुआ", owner: "Mock carrier", time: "8 Sep, 16:22" },
+    );
+  }
+  events.push({ label: en ? "All service requests closed" : "सभी सेवा अनुरोध पूरे हुए", owner: "LicencePath case service", time: "8 Sep, 16:24" });
+  return events;
+}
+
+type StageProps = { state: JourneyState; update: (next: Partial<JourneyState>) => void };
+
 export function CitizenJourney() {
-  const [state, setState] = useState<JourneyState>(defaultState);
+  const [state, setState] = useState<JourneyState>(() => createDefaultState());
   const [hydrated, setHydrated] = useState(false);
   const [resumeFound, setResumeFound] = useState(false);
   const [error, setError] = useState("");
@@ -175,19 +299,21 @@ export function CitizenJourney() {
   const [grievanceText, setGrievanceText] = useState("");
   const t = translations[state.language];
 
-  const eligibility = useMemo(
-    () => evaluateEligibility(state.issueDate, "2026-08-28"),
-    [state.issueDate],
-  );
+  const eligibility = useMemo(() => evaluateEligibility(state.issueDate, TODAY), [state.issueDate]);
+  const evidenceRequirements = useMemo(() => requiredEvidence(state.selectedServices), [state.selectedServices]);
+  const fees = useMemo(() => feeBreakdown(state.selectedServices), [state.selectedServices]);
+  const requiresAppointment = caseRequiresAppointment(state.selectedServices);
 
   useEffect(() => {
-    const saved = window.localStorage.getItem("licencepath-demo-case");
+    const saved = window.localStorage.getItem(STORAGE_KEY);
     if (saved) {
       try {
-        setState({ ...defaultState, ...JSON.parse(saved) });
+        const parsed = JSON.parse(saved) as JourneyState;
+        if (!Array.isArray(parsed.selectedServices) || !parsed.caseData?.serviceRequests) throw new Error("Old demo state");
+        setState({ ...createDefaultState(), ...parsed });
         setResumeFound(true);
       } catch {
-        window.localStorage.removeItem("licencepath-demo-case");
+        window.localStorage.removeItem(STORAGE_KEY);
       }
     }
     setHydrated(true);
@@ -195,7 +321,7 @@ export function CitizenJourney() {
 
   useEffect(() => {
     if (!hydrated) return;
-    window.localStorage.setItem("licencepath-demo-case", JSON.stringify(state));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     document.documentElement.lang = state.language;
   }, [hydrated, state]);
 
@@ -206,7 +332,33 @@ export function CitizenJourney() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  const toggleService = (serviceId: ServiceId) => {
+    setState((current) => {
+      const selectedServices = current.selectedServices.includes(serviceId)
+        ? current.selectedServices.filter((id) => id !== serviceId)
+        : serviceOrder.filter((id) => [...current.selectedServices, serviceId].includes(id));
+      const resetCase = {
+        ...current.caseData,
+        payment: { state: "not_started" as const, attempts: 0 },
+        submission: { state: "not_started" as const },
+      };
+      return {
+        ...current,
+        selectedServices,
+        evidence: {},
+        slot: "",
+        outcomeIndex: 0,
+        caseData: configureCaseServices(resetCase, selectedServices),
+      };
+    });
+    setError("");
+  };
+
   const begin = () => {
+    if (state.selectedServices.length === 0) {
+      setError(state.language === "en" ? "Choose at least one service to build your journey." : "अपनी यात्रा बनाने के लिए कम से कम एक सेवा चुनें।");
+      return;
+    }
     if (!state.acceptedNotice) {
       setError(state.language === "en" ? "Confirm that you will use demo data only." : "पुष्टि करें कि आप केवल डेमो जानकारी का उपयोग करेंगे।");
       return;
@@ -219,15 +371,11 @@ export function CitizenJourney() {
   };
 
   const confirmEligibility = () => {
-    if (!eligibility.eligible) {
-      setError(state.language === "en" ? `This LL becomes eligible on ${eligibility.earliestDate}. No payment is needed today.` : `यह LL ${eligibility.earliestDate} को पात्र होगा। आज भुगतान न करें।`);
+    if (state.selectedServices.includes("ll_to_dl") && !eligibility.eligible) {
+      setError(state.language === "en" ? `The LL-to-DL request becomes eligible on ${eligibility.earliestDate}. No payment is needed today.` : `LL से DL अनुरोध ${eligibility.earliestDate} को पात्र होगा। आज भुगतान न करें।`);
       return;
     }
-    setState((current) => ({
-      ...current,
-      stage: 2,
-      caseData: { ...current.caseData, issueDate: current.issueDate },
-    }));
+    setState((current) => ({ ...current, stage: 2, caseData: { ...current.caseData, issueDate: current.issueDate } }));
     setError("");
   };
 
@@ -239,40 +387,51 @@ export function CitizenJourney() {
     go(3);
   };
 
+  const continueDetails = () => {
+    const en = state.language === "en";
+    if (state.selectedServices.includes("duplicate") && !state.duplicateReason) {
+      setError(en ? "Choose whether the demo licence was lost or damaged." : "चुनें कि डेमो लाइसेंस खोया है या खराब हुआ है।");
+      return;
+    }
+    if (state.selectedServices.includes("name_change") && state.newName.trim().length < 3) {
+      setError(en ? "Enter the corrected synthetic name." : "सही नकली नाम भरें।");
+      return;
+    }
+    if (state.selectedServices.includes("address_change") && state.newAddress.trim().length < 8) {
+      setError(en ? "Enter the new synthetic address." : "नया नकली पता भरें।");
+      return;
+    }
+    if (state.selectedServices.includes("mobile_update") && (!/^\d{10}$/.test(state.newMobile) || state.mobileOtp !== "639204")) {
+      setError(en ? "Use the 10-digit demo mobile number and test OTP 639204." : "10 अंकों का डेमो मोबाइल नंबर और टेस्ट OTP 639204 उपयोग करें।");
+      return;
+    }
+    go(4);
+  };
+
   const continueEvidence = () => {
-    if (!Object.values(state.evidence).every(Boolean)) {
-      setError(state.language === "en" ? "Attach all three generated fixtures before review." : "आगे बढ़ने से पहले तीनों नकली दस्तावेज जोड़ें।");
+    if (!evidenceRequirements.every((evidenceId) => state.evidence[evidenceId])) {
+      setError(state.language === "en" ? "Attach every generated fixture in your combined checklist." : "संयुक्त चेकलिस्ट के सभी नकली दस्तावेज जोड़ें।");
       return;
     }
     go(5);
   };
 
-  const pay = () => {
-    setState((current) => ({ ...current, caseData: beginPayment(current.caseData) }));
-  };
+  const pay = () => setState((current) => ({ ...current, caseData: beginPayment(current.caseData) }));
+  const reconcile = () => setState((current) => ({ ...current, caseData: reconcilePayment(current.caseData) }));
+  const confirmZeroFee = () => setState((current) => ({ ...current, caseData: confirmNoFee(current.caseData) }));
+  const submit = () => setState((current) => ({ ...current, caseData: submitApplication(current.caseData, "licencepath-demo-submit-v2") }));
 
-  const reconcile = () => {
-    setState((current) => ({ ...current, caseData: reconcilePayment(current.caseData) }));
-  };
-
-  const submit = () => {
-    setState((current) => ({
-      ...current,
-      caseData: submitApplication(current.caseData, "licencepath-demo-submit-1"),
-    }));
-  };
-
-  const confirmSlot = () => {
-    if (!state.slot) {
-      setError(state.language === "en" ? "Choose one simulated test slot." : "एक नकली टेस्ट स्लॉट चुनें।");
+  const continueAfterSubmission = () => {
+    if (requiresAppointment && !state.slot) {
+      setError(state.language === "en" ? "Choose one simulated driving test slot." : "एक नकली ड्राइविंग टेस्ट स्लॉट चुनें।");
       return;
     }
     go(7);
   };
 
   const resetDemo = () => {
-    window.localStorage.removeItem("licencepath-demo-case");
-    setState(defaultState);
+    window.localStorage.removeItem(STORAGE_KEY);
+    setState(createDefaultState());
     setResumeFound(false);
     setError("");
   };
@@ -287,202 +446,138 @@ export function CitizenJourney() {
   return (
     <div className={`app-shell ${state.largeText ? "large-text" : ""} ${state.highContrast ? "high-contrast" : ""}`}>
       <a className="skip-link" href="#main-content">{t.skip}</a>
-
-      <div className="prototype-banner" role="note">
-        <Warning aria-hidden="true" size={18} weight="fill" />
-        <span>{t.banner}</span>
-        <MockBadge language={state.language} />
-      </div>
+      <div className="prototype-banner" role="note"><Warning aria-hidden="true" size={18} weight="fill" /><span>{t.banner}</span><MockBadge language={state.language} /></div>
 
       <header className="site-header">
-        <div className="brand-wrap">
-          <Link className="brand" href="/" aria-label="LicencePath home">
-            <span className="brand-mark" aria-hidden="true">LP</span>
-            <span>LicencePath</span>
-          </Link>
-          <span className="pilot-label">{t.pilot}</span>
-        </div>
+        <div className="brand-wrap"><Link className="brand" href="/" aria-label="LicencePath home"><span className="brand-mark" aria-hidden="true">LP</span><span>LicencePath</span></Link><span className="pilot-label">{t.pilot}</span></div>
         <nav className="header-actions" aria-label="Language and accessibility">
-          <button className="utility-button" onClick={() => update({ language: state.language === "en" ? "hi" : "en" })} type="button">
-            <Translate aria-hidden="true" size={19} />
-            {state.language === "en" ? t.hindi : t.english}
-          </button>
-          <button aria-pressed={state.largeText} className="utility-button" onClick={() => update({ largeText: !state.largeText })} type="button">
-            <PersonArmsSpread aria-hidden="true" size={19} />
-            {t.largeText}
-          </button>
-          <button aria-pressed={state.highContrast} className="utility-button compact-utility" onClick={() => update({ highContrast: !state.highContrast })} type="button">
-            {t.contrast}
-          </button>
+          <button className="utility-button" onClick={() => update({ language: state.language === "en" ? "hi" : "en" })} type="button"><Translate aria-hidden="true" size={19} />{state.language === "en" ? t.hindi : t.english}</button>
+          <button aria-pressed={state.largeText} className="utility-button" onClick={() => update({ largeText: !state.largeText })} type="button"><PersonArmsSpread aria-hidden="true" size={19} />{t.largeText}</button>
+          <button aria-pressed={state.highContrast} className="utility-button compact-utility" onClick={() => update({ highContrast: !state.highContrast })} type="button">{t.contrast}</button>
           <Link className="utility-link" href={state.language === "hi" ? "/about/hi" : "/about"}>{t.about}</Link>
         </nav>
       </header>
 
       <div className="journey-frame">
         <aside className="progress-panel" aria-label="Application progress">
-          <div className="case-kicker">{t.case}</div>
-          <strong>{state.caseData.caseId}</strong>
-          <p>{t.mainJourney}</p>
-          <ol className="step-list">
-            {t.stages.map((label, index) => (
-              <li className={index === state.stage ? "active" : index < state.stage ? "complete" : ""} key={label}>
-                <span aria-hidden="true">{index < state.stage ? <Check size={14} weight="bold" /> : index + 1}</span>
-                <span>{label}</span>
-              </li>
-            ))}
-          </ol>
+          <div className="case-kicker">{t.case}</div><strong>{state.caseData.caseId}</strong><p>{t.mainJourney}</p>
+          <ol className="step-list">{t.stages.map((label, index) => <li className={index === state.stage ? "active" : index < state.stage ? "complete" : ""} key={label}><span aria-hidden="true">{index < state.stage ? <Check size={14} weight="bold" /> : index + 1}</span><span>{label}</span></li>)}</ol>
           <div className="save-state"><CheckCircle aria-hidden="true" size={18} weight="fill" />{t.saved}</div>
           {state.grievanceId ? <div className="grievance-ref">{state.grievanceId}</div> : null}
         </aside>
 
         <main id="main-content" className="journey-main" tabIndex={-1}>
-          <div className="mobile-progress" aria-live="polite">
-            <span>{state.stage + 1} / {t.stages.length}</span>
-            <strong>{t.stages[state.stage]}</strong>
-          </div>
+          <div className="mobile-progress" aria-live="polite"><span>{state.stage + 1} / {t.stages.length}</span><strong>{t.stages[state.stage]}</strong></div>
+          {resumeFound && state.stage > 0 ? <Notice tone="success"><strong>{state.language === "en" ? "Your demo was restored." : "आपका डेमो फिर से खुल गया है।"}</strong><p>{state.language === "en" ? "Continue without entering the same information again." : "वही जानकारी दोबारा भरे बिना आगे बढ़ें।"}</p></Notice> : null}
 
-          {resumeFound && state.stage > 0 ? (
-            <Notice tone="success">
-              <strong>{state.language === "en" ? "Your demo was restored." : "आपका डेमो फिर से खुल गया है।"}</strong>
-              <p>{state.language === "en" ? "Continue without entering the same information again." : "वही जानकारी दोबारा भरे बिना आगे बढ़ें।"}</p>
-            </Notice>
-          ) : null}
-
-          {state.stage === 0 ? <StartStage state={state} update={update} error={error} onContinue={begin} /> : null}
-          {state.stage === 1 ? <EligibilityStage language={state.language} issueDate={state.issueDate} eligibility={eligibility} error={error} update={update} onContinue={confirmEligibility} /> : null}
+          {state.stage === 0 ? <StartStage state={state} update={update} error={error} toggleService={toggleService} onContinue={begin} /> : null}
+          {state.stage === 1 ? <EligibilityStage state={state} eligibility={eligibility} error={error} update={update} onContinue={confirmEligibility} /> : null}
           {state.stage === 2 ? <IdentityStage state={state} update={update} error={error} onContinue={verifyIdentity} /> : null}
-          {state.stage === 3 ? <ApplicationStage state={state} update={update} onContinue={() => go(4)} /> : null}
-          {state.stage === 4 ? <EvidenceStage state={state} update={update} error={error} onContinue={continueEvidence} /> : null}
-          {state.stage === 5 ? <PaymentStage state={state} onPay={pay} onReconcile={reconcile} onContinue={() => go(6)} /> : null}
-          {state.stage === 6 ? <SubmissionStage state={state} update={update} error={error} onSubmit={submit} onContinue={confirmSlot} /> : null}
+          {state.stage === 3 ? <DetailsStage state={state} update={update} error={error} onContinue={continueDetails} /> : null}
+          {state.stage === 4 ? <EvidenceStage state={state} update={update} required={evidenceRequirements} error={error} onContinue={continueEvidence} /> : null}
+          {state.stage === 5 ? <PaymentStage state={state} fees={fees} onPay={pay} onReconcile={reconcile} onConfirmZeroFee={confirmZeroFee} onContinue={() => go(6)} /> : null}
+          {state.stage === 6 ? <SubmissionStage state={state} update={update} requiresAppointment={requiresAppointment} error={error} onSubmit={submit} onContinue={continueAfterSubmission} /> : null}
           {state.stage === 7 ? <TrackingStage state={state} update={update} reset={resetDemo} /> : null}
 
-          {state.stage > 0 && state.stage < 7 ? (
-            <button className="back-button" onClick={() => go(state.stage - 1)} type="button"><ArrowLeft aria-hidden="true" size={18} />{t.back}</button>
-          ) : null}
+          {state.stage > 0 && state.stage < 7 ? <button className="back-button" onClick={() => go(state.stage - 1)} type="button"><ArrowLeft aria-hidden="true" size={18} />{t.back}</button> : null}
         </main>
 
         <aside className="context-panel" aria-label="Current case summary">
           <h2>{state.language === "en" ? "Your case" : "आपका केस"}</h2>
-          <dl>
-            <div><dt>{state.language === "en" ? "Service" : "सेवा"}</dt><dd>{t.mainJourney}</dd></div>
-            <div><dt>{state.language === "en" ? "Pilot" : "पायलट"}</dt><dd>Delhi, RTO-TEST-01 <MockBadge language={state.language} /></dd></div>
-            <div><dt>{state.language === "en" ? "Payment" : "भुगतान"}</dt><dd>{paymentLabel(state.caseData.payment.state, state.language)}</dd></div>
-            <div><dt>{state.language === "en" ? "Application" : "आवेदन"}</dt><dd>{state.caseData.submission.applicationId ?? (state.language === "en" ? "Not submitted" : "जमा नहीं हुआ")}</dd></div>
-          </dl>
-          <Notice>
-            <strong>{state.language === "en" ? "Nothing here reaches Sarathi." : "यहां से कुछ भी Sarathi तक नहीं जाता।"}</strong>
-          </Notice>
+          <p className="context-count">{state.selectedServices.length} {state.language === "en" ? "service request(s)" : "सेवा अनुरोध"}</p>
+          <ul className="case-service-list">{state.selectedServices.map((serviceId) => <li key={serviceId}><span>{serviceLabel(serviceId, state.language)}</span><small>{state.caseData.serviceRequests.find((request) => request.serviceId === serviceId)?.requestId}</small></li>)}</ul>
+          <dl><div><dt>{state.language === "en" ? "Rule pack" : "नियम पैक"}</dt><dd>{DEMO_RULE_PACK.id}</dd></div><div><dt>{state.language === "en" ? "Payment" : "भुगतान"}</dt><dd>{paymentLabel(state.caseData.payment.state, state.language)}</dd></div><div><dt>{state.language === "en" ? "Application" : "आवेदन"}</dt><dd>{state.caseData.submission.applicationId ?? (state.language === "en" ? "Not submitted" : "जमा नहीं हुआ")}</dd></div></dl>
+          <Notice><strong>{state.language === "en" ? "Nothing here reaches Sarathi." : "यहां से कुछ भी Sarathi तक नहीं जाता।"}</strong></Notice>
         </aside>
       </div>
 
       <button className="help-button" onClick={() => setHelpOpen(true)} type="button"><Lifebuoy aria-hidden="true" size={22} weight="duotone" />{t.help}</button>
-
-      {helpOpen ? (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setHelpOpen(false)}>
-          <section aria-labelledby="help-title" aria-modal="true" className="help-modal" role="dialog" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="modal-head"><div><MockBadge language={state.language} /><h2 id="help-title">{state.language === "en" ? "Get help with this step" : "इस चरण में मदद लें"}</h2></div><button aria-label="Close help" onClick={() => setHelpOpen(false)} type="button">×</button></div>
-            <p>{state.language === "en" ? "Create a synthetic grievance linked to this demo case. A mock service owner responds within 2 working days." : "इस डेमो केस से जुड़ी नकली शिकायत बनाएं। नकली सेवा अधिकारी 2 कार्य दिवस में जवाब देगा।"}</p>
-            <Field label={state.language === "en" ? "What went wrong?" : "क्या समस्या हुई?"} hint={state.language === "en" ? "Do not enter personal information." : "कोई निजी जानकारी न लिखें।"}>
-              <textarea value={grievanceText} onChange={(event) => setGrievanceText(event.target.value)} rows={4} />
-            </Field>
-            <button className="primary-button" disabled={grievanceText.trim().length < 8} onClick={createGrievance} type="button">{state.language === "en" ? "Create demo grievance" : "डेमो शिकायत बनाएं"}</button>
-          </section>
-        </div>
-      ) : null}
+      {helpOpen ? <div className="modal-backdrop" role="presentation" onMouseDown={() => setHelpOpen(false)}><section aria-labelledby="help-title" aria-modal="true" className="help-modal" role="dialog" onMouseDown={(event) => event.stopPropagation()}><div className="modal-head"><div><MockBadge language={state.language} /><h2 id="help-title">{state.language === "en" ? "Get help with this step" : "इस चरण में मदद लें"}</h2></div><button aria-label="Close help" onClick={() => setHelpOpen(false)} type="button">×</button></div><p>{state.language === "en" ? "Create a synthetic grievance linked to this demo case. A mock service owner responds within 2 working days." : "इस डेमो केस से जुड़ी नकली शिकायत बनाएं। नकली सेवा अधिकारी 2 कार्य दिवस में जवाब देगा।"}</p><Field label={state.language === "en" ? "What went wrong?" : "क्या समस्या हुई?"} hint={state.language === "en" ? "Do not enter personal information." : "कोई निजी जानकारी न लिखें।"}><textarea value={grievanceText} onChange={(event) => setGrievanceText(event.target.value)} rows={4} /></Field><button className="primary-button" disabled={grievanceText.trim().length < 8} onClick={createGrievance} type="button">{state.language === "en" ? "Create demo grievance" : "डेमो शिकायत बनाएं"}</button></section></div> : null}
     </div>
   );
 }
 
-type StageProps = { state: JourneyState; update: (next: Partial<JourneyState>) => void };
-
-function StageHeader({ icon: Icon, title, intro, language }: { icon: typeof Info; title: string; intro: string; language: Language }) {
-  return <header className="stage-header"><div className="stage-icon"><Icon aria-hidden="true" size={28} weight="duotone" /></div><div><MockBadge language={language} /><h1>{title}</h1><p>{intro}</p></div></header>;
-}
-
-function StartStage({ state, update, error, onContinue }: StageProps & { error: string; onContinue: () => void }) {
+function StartStage({ state, update, error, toggleService, onContinue }: StageProps & { error: string; toggleService: (serviceId: ServiceId) => void; onContinue: () => void }) {
   const en = state.language === "en";
-  return <section className="stage-section start-stage">
-    <StageHeader icon={ShieldCheck} language={state.language} title={en ? "Start with what you need" : "अपनी जरूरत से शुरू करें"} intro={en ? "We will guide one complete LL-to-DL application with safe demo data." : "हम सुरक्षित डेमो जानकारी के साथ LL से DL का पूरा आवेदन समझाएंगे।"} />
-    <fieldset className="choice-group"><legend>{en ? "Who is completing this?" : "यह आवेदन कौन पूरा कर रहा है?"}</legend><div className="choice-grid two">
-      <label className={`choice-card ${state.mode === "self" ? "selected" : ""}`}><input checked={state.mode === "self"} name="mode" onChange={() => update({ mode: "self" })} type="radio" /><LockKey aria-hidden="true" size={26} weight="duotone" /><span><strong>{en ? "I am applying" : "मैं आवेदन कर रहा हूं"}</strong><small>{en ? "You control every confirmation." : "हर पुष्टि आपके नियंत्रण में है।"}</small></span></label>
-      <label className={`choice-card ${state.mode === "assisted" ? "selected" : ""}`}><input checked={state.mode === "assisted"} name="mode" onChange={() => update({ mode: "assisted" })} type="radio" /><HandHeart aria-hidden="true" size={26} weight="duotone" /><span><strong>{en ? "Someone is helping me" : "कोई मेरी मदद कर रहा है"}</strong><small>{en ? "The citizen still confirms consent, payment and submission." : "नागरिक सहमति, भुगतान और आवेदन की पुष्टि खुद करता है।"}</small></span></label>
-    </div></fieldset>
-    {state.mode === "assisted" ? <Notice><label className="check-row"><input checked={state.helperConsent} onChange={(e) => update({ helperConsent: e.target.checked })} type="checkbox" /><span><strong>{en ? "I consent to assisted mode for 30 minutes." : "मैं 30 मिनट के सहायता मोड की सहमति देता हूं।"}</strong><small>{en ? "Demo helper: Neha Verma, family member. Actions are shown in the audit trail." : "डेमो सहायक: नेहा वर्मा, परिवार की सदस्य। हर कार्रवाई रिकॉर्ड होगी।"}</small></span></label></Notice> : null}
-    <fieldset className="choice-group"><legend>{en ? "Choose a service" : "सेवा चुनें"}</legend><label className="service-choice selected"><input checked readOnly type="checkbox" /><span><strong>{en ? "Learner's Licence to permanent Driving Licence" : "लर्नर लाइसेंस से स्थायी ड्राइविंग लाइसेंस"}</strong><small>{en ? "Complete journey available now" : "पूरी यात्रा अभी उपलब्ध है"}</small></span><CheckCircle aria-hidden="true" size={24} weight="fill" /></label><details><summary>{en ? "Other services using the same case" : "इसी केस की अन्य सेवाएं"}</summary><p>{en ? "Duplicate, name change, address change and mobile update are supporting branches. Their state-specific rules are not presented as verified in this Delhi fixture." : "डुप्लीकेट, नाम, पता और मोबाइल बदलाव सहायक सेवाएं हैं। इनके नियम इस दिल्ली उदाहरण में सत्यापित नहीं माने गए हैं।"}</p></details></fieldset>
-    <label className="notice-confirm"><input checked={state.acceptedNotice} onChange={(e) => update({ acceptedNotice: e.target.checked })} type="checkbox" /><span>{en ? "I understand this is not an official service and I will use only the synthetic details provided." : "मैं समझता हूं कि यह आधिकारिक सेवा नहीं है और केवल दी गई नकली जानकारी का उपयोग करूंगा।"}</span></label>
-    {error ? <p className="form-error" role="alert">{error}</p> : null}
-    <button className="primary-button" onClick={onContinue} type="button">{en ? "Check eligibility" : "पात्रता जांचें"}<ArrowRight aria-hidden="true" size={18} weight="bold" /></button>
-  </section>;
+  return (
+    <section className="stage-section start-stage">
+      <StageHeader icon={ShieldCheck} language={state.language} title={en ? "Choose what you need — we build the journey" : "अपनी जरूरत चुनें — हम यात्रा बनाएंगे"} intro={en ? "Select one or several licence services. The app creates one case with a separate, trackable request for each service." : "एक या कई लाइसेंस सेवाएं चुनें। ऐप हर सेवा के लिए अलग, ट्रैक करने योग्य अनुरोध के साथ एक केस बनाता है।"} />
+
+      <div className="system-compare" aria-label={en ? "Current journey compared with LicencePath" : "मौजूदा यात्रा और LicencePath की तुलना"}>
+        <article><span>{en ? "PRD problem model" : "PRD समस्या मॉडल"}</span><h2>{en ? "How the current journey can feel" : "मौजूदा यात्रा कैसी लग सकती है"}</h2><ol><li>{en ? "Find the correct State or RTO service menu" : "सही राज्य या RTO सेवा मेनू खोजें"}</li><li>{en ? "Interpret eligibility and document rules" : "पात्रता और दस्तावेज नियम समझें"}</li><li>{en ? "Move through identity, payment, appointment and status handoffs" : "पहचान, भुगतान, अपॉइंटमेंट और स्थिति के बीच जाएं"}</li><li>{en ? "Recover using separate references or grievance paths" : "अलग संदर्भ या शिकायत मार्ग से समस्या सुलझाएं"}</li></ol><small>{en ? "This is the PRD's citizen problem statement, not a reverse-engineered claim about every State portal." : "यह PRD की नागरिक समस्या है, हर राज्य पोर्टल के बारे में रिवर्स-इंजीनियर किया गया दावा नहीं।"}</small></article>
+        <article className="proposed-flow"><span>{en ? "LicencePath proposal" : "LicencePath प्रस्ताव"}</span><h2>{en ? "One guided case" : "एक निर्देशित केस"}</h2><ol><li>{en ? "Choose goals in plain language" : "आसान भाषा में जरूरत चुनें"}</li><li>{en ? "Verify the common profile once" : "साझा प्रोफाइल एक बार जांचें"}</li><li>{en ? "Get one combined checklist and fee review" : "एक संयुक्त चेकलिस्ट और शुल्क देखें"}</li><li>{en ? "Track each request, owner and recovery action" : "हर अनुरोध, जिम्मेदार और समाधान देखें"}</li></ol></article>
+      </div>
+
+      <fieldset className="choice-group"><legend>{en ? "Who is completing this?" : "यह आवेदन कौन पूरा कर रहा है?"}</legend><div className="choice-grid two"><label className={`choice-card ${state.mode === "self" ? "selected" : ""}`}><input checked={state.mode === "self"} name="mode" onChange={() => update({ mode: "self" })} type="radio" /><LockKey aria-hidden="true" size={26} weight="duotone" /><span><strong>{en ? "I am applying" : "मैं आवेदन कर रहा हूं"}</strong><small>{en ? "You control every confirmation." : "हर पुष्टि आपके नियंत्रण में है।"}</small></span></label><label className={`choice-card ${state.mode === "assisted" ? "selected" : ""}`}><input checked={state.mode === "assisted"} name="mode" onChange={() => update({ mode: "assisted" })} type="radio" /><HandHeart aria-hidden="true" size={26} weight="duotone" /><span><strong>{en ? "Someone is helping me" : "कोई मेरी मदद कर रहा है"}</strong><small>{en ? "The citizen still confirms consent, payment and submission." : "नागरिक सहमति, भुगतान और आवेदन की पुष्टि खुद करता है।"}</small></span></label></div></fieldset>
+      {state.mode === "assisted" ? <Notice><label className="check-row"><input checked={state.helperConsent} onChange={(event) => update({ helperConsent: event.target.checked })} type="checkbox" /><span><strong>{en ? "I consent to assisted mode for 30 minutes." : "मैं 30 मिनट के सहायता मोड की सहमति देता हूं।"}</strong><small>{en ? "Demo helper: Neha Verma, family member. Actions appear in the audit trail." : "डेमो सहायक: नेहा वर्मा, परिवार की सदस्य। हर कार्रवाई रिकॉर्ड होगी।"}</small></span></label></Notice> : null}
+
+      <fieldset className="choice-group"><legend>{en ? "Which services do you need?" : "आपको कौन सी सेवाएं चाहिए?"}</legend><p className="group-hint">{en ? "Choose more than one to see a combined case. Bundling rules are illustrative and would be State/RTO-configured in production." : "संयुक्त केस देखने के लिए एक से अधिक चुनें। असल सेवा में जोड़ने के नियम राज्य/RTO के अनुसार होंगे।"}</p><div className="service-grid">{serviceOrder.map((serviceId) => { const selected = state.selectedServices.includes(serviceId); const copy = serviceCopy[serviceId]; return <label className={`service-choice ${selected ? "selected" : ""}`} key={serviceId}><input checked={selected} onChange={() => toggleService(serviceId)} type="checkbox" /><span><strong>{en ? copy.en : copy.hi}</strong><small>{en ? copy.descriptionEn : copy.descriptionHi}</small><em>₹{DEMO_RULE_PACK.services[serviceId].fee} {en ? "illustrative" : "उदाहरण"}</em></span>{selected ? <CheckCircle aria-hidden="true" size={24} weight="fill" /> : null}</label>; })}</div></fieldset>
+      <div className="selection-summary" aria-live="polite"><strong>{state.selectedServices.length}</strong><span>{en ? "service requests will share one case, identity check, evidence bundle and timeline." : "सेवा अनुरोध एक केस, पहचान जांच, दस्तावेज बंडल और टाइमलाइन साझा करेंगे।"}</span></div>
+      <label className="notice-confirm"><input checked={state.acceptedNotice} onChange={(event) => update({ acceptedNotice: event.target.checked })} type="checkbox" /><span>{en ? "I understand this is not an official service and I will use only the synthetic details provided." : "मैं समझता हूं कि यह आधिकारिक सेवा नहीं है और केवल दी गई नकली जानकारी का उपयोग करूंगा।"}</span></label>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      <button className="primary-button" onClick={onContinue} type="button">{en ? "Build my service journey" : "मेरी सेवा यात्रा बनाएं"}<ArrowRight aria-hidden="true" size={18} weight="bold" /></button>
+    </section>
+  );
 }
 
-function EligibilityStage({ language, issueDate, eligibility, error, update, onContinue }: { language: Language; issueDate: string; eligibility: ReturnType<typeof evaluateEligibility>; error: string; update: (next: Partial<JourneyState>) => void; onContinue: () => void }) {
-  const en = language === "en";
-  return <section className="stage-section"><StageHeader icon={ClockCountdown} language={language} title={en ? "Check eligibility before you pay" : "भुगतान से पहले पात्रता जांचें"} intro={en ? "This fixture uses a 30-day waiting period and a Delhi test RTO." : "इस उदाहरण में 30 दिन की प्रतीक्षा और दिल्ली का टेस्ट RTO है।"} />
-    <Notice tone="warning"><strong>{en ? "Illustrative rule" : "उदाहरण नियम"}</strong><p>{en ? "Verify the current rule with the responsible transport department before a real application." : "असल आवेदन से पहले संबंधित परिवहन विभाग से मौजूदा नियम जांचें।"}</p></Notice>
-    <div className="form-grid"><Field label={en ? "Synthetic Learner's Licence number" : "नकली लर्नर लाइसेंस नंबर"} hint={en ? "Use the prefilled demo value." : "पहले से भरी डेमो जानकारी रखें।"}><div className="input-with-badge"><input readOnly value={defaultCase.llNumber} /><MockBadge language={language} /></div></Field><Field label={en ? "Learner's Licence issue date" : "लर्नर लाइसेंस जारी होने की तारीख"}><input max="2026-08-28" onChange={(e) => update({ issueDate: e.target.value })} type="date" value={issueDate} /></Field></div>
-    <div className={`eligibility-result ${eligibility.eligible ? "eligible" : "not-eligible"}`} aria-live="polite"><span>{eligibility.eligible ? <CheckCircle size={30} weight="fill" /> : <ClockCountdown size={30} weight="fill" />}</span><div><strong>{eligibility.eligible ? (en ? "Eligible today" : "आज पात्र हैं") : (en ? "Not eligible yet" : "अभी पात्र नहीं हैं")}</strong><p>{en ? `Held for ${eligibility.daysHeld} days. Earliest valid date: ${eligibility.earliestDate}.` : `${eligibility.daysHeld} दिन पूरे हुए। पहली पात्र तारीख: ${eligibility.earliestDate}.`}</p></div></div>
-    {!eligibility.eligible ? <button className="text-button" onClick={() => update({ issueDate: "2026-07-29" })} type="button">{en ? "Use the eligible demo date" : "पात्र डेमो तारीख चुनें"}</button> : null}
-    {error ? <p className="form-error" role="alert">{error}</p> : null}<button className="primary-button" onClick={onContinue} type="button">{en ? "Continue to identity" : "पहचान पर जाएं"}<ArrowRight size={18} weight="bold" /></button>
-  </section>;
+function EligibilityStage({ state, eligibility, error, update, onContinue }: StageProps & { eligibility: ReturnType<typeof evaluateEligibility>; error: string; onContinue: () => void }) {
+  const en = state.language === "en";
+  return (
+    <section className="stage-section">
+      <StageHeader icon={ClockCountdown} language={state.language} title={en ? "Check every request before effort or payment" : "मेहनत या भुगतान से पहले हर अनुरोध जांचें"} intro={en ? "The selected services are evaluated against one explicit, versioned demo rule pack." : "चुनी गई सेवाओं को एक स्पष्ट, संस्करण वाले डेमो नियम पैक से जांचा जाता है।"} />
+      <Notice tone="warning"><strong>{en ? "Illustrative jurisdiction rules" : "उदाहरण क्षेत्र नियम"}</strong><p>{DEMO_RULE_PACK.id} · {DEMO_RULE_PACK.source}. {en ? "Production must load authorised, current State/RTO rules." : "असल सेवा में अधिकृत, मौजूदा राज्य/RTO नियम लोड होंगे।"}</p></Notice>
+      {state.selectedServices.includes("ll_to_dl") ? <><div className="form-grid"><Field label={en ? "Synthetic Learner's Licence number" : "नकली लर्नर लाइसेंस नंबर"} hint={en ? "Provided by the mock record adapter" : "नकली रिकॉर्ड सेवा से मिला"}><div className="input-with-badge"><input readOnly value={state.caseData.llNumber} /><MockBadge language={state.language} label="Mock Sarathi" /></div></Field><Field label={en ? "Learner's Licence issue date" : "लर्नर लाइसेंस जारी होने की तारीख"}><input max={TODAY} onChange={(event) => update({ issueDate: event.target.value })} type="date" value={state.issueDate} /></Field></div><div className={`eligibility-result ${eligibility.eligible ? "eligible" : "not-eligible"}`} aria-live="polite"><span>{eligibility.eligible ? <CheckCircle size={30} weight="fill" /> : <ClockCountdown size={30} weight="fill" />}</span><div><strong>{eligibility.eligible ? (en ? "LL-to-DL request is eligible in this fixture" : "इस उदाहरण में LL से DL अनुरोध पात्र है") : (en ? "LL-to-DL request is not eligible yet" : "LL से DL अनुरोध अभी पात्र नहीं है")}</strong><p>{en ? `Held for ${eligibility.daysHeld} days. Earliest demo date: ${eligibility.earliestDate}.` : `${eligibility.daysHeld} दिन पूरे हुए। पहली डेमो तारीख: ${eligibility.earliestDate}.`}</p></div></div>{!eligibility.eligible ? <button className="text-button" onClick={() => update({ issueDate: "2026-07-29" })} type="button">{en ? "Use the eligible demo date" : "पात्र डेमो तारीख चुनें"}</button> : null}</> : null}
+      <div className="request-checks">{state.selectedServices.filter((id) => id !== "ll_to_dl").map((serviceId) => <article key={serviceId}><CheckCircle aria-hidden="true" size={22} weight="fill" /><div><strong>{serviceLabel(serviceId, state.language)}</strong><p>{en ? "Available in this demo rule pack. Details and evidence are checked next." : "इस डेमो नियम पैक में उपलब्ध। आगे जानकारी और दस्तावेज जांचे जाएंगे।"}</p></div><MockBadge language={state.language} label={en ? "Configured rule" : "सेट नियम"} /></article>)}</div>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}<button className="primary-button" onClick={onContinue} type="button">{en ? "Continue to identity" : "पहचान पर जाएं"}<ArrowRight size={18} weight="bold" /></button>
+    </section>
+  );
 }
 
 function IdentityStage({ state, update, error, onContinue }: StageProps & { error: string; onContinue: () => void }) {
   const en = state.language === "en";
-  return <section className="stage-section"><StageHeader icon={LockKey} language={state.language} title={en ? "Retrieve your demo record" : "अपना डेमो रिकॉर्ड पाएं"} intro={en ? "A displayed test OTP replaces any real identity provider." : "असली पहचान सेवा की जगह दिखाया गया टेस्ट OTP है।"} />
-    <Notice><strong>{en ? "Test OTP: 482916" : "टेस्ट OTP: 482916"}</strong><p>{en ? "No SMS is sent. No real mobile number is used." : "कोई SMS नहीं भेजा जाता। असली मोबाइल नंबर उपयोग नहीं होता।"}</p></Notice>
-    <Field label={en ? "Demo mobile number" : "डेमो मोबाइल नंबर"}><div className="input-with-badge"><input readOnly value="+91 90000 00000" /><MockBadge language={state.language} /></div></Field>
-    <label className="notice-confirm"><input checked={state.identityConsent} onChange={(e) => update({ identityConsent: e.target.checked })} type="checkbox" /><span>{en ? "I consent to retrieve the synthetic Asha Verma record for this demo." : "मैं इस डेमो के लिए आशा वर्मा का नकली रिकॉर्ड देखने की सहमति देता हूं।"}</span></label>
-    <Field label={en ? "6-digit test OTP" : "6 अंकों का टेस्ट OTP"} error={error}><input autoComplete="one-time-code" inputMode="numeric" maxLength={6} onChange={(e) => update({ otp: e.target.value.replace(/\D/g, "") })} value={state.otp} /></Field>
-    <button className="primary-button" onClick={onContinue} type="button">{en ? "Retrieve demo record" : "डेमो रिकॉर्ड पाएं"}<MagnifyingGlass size={18} weight="bold" /></button>
-  </section>;
+  return <section className="stage-section"><StageHeader icon={LockKey} language={state.language} title={en ? "Retrieve the common demo profile once" : "साझा डेमो प्रोफाइल एक बार पाएं"} intro={en ? `${state.selectedServices.length} service requests reuse one consented identity and licence record.` : `${state.selectedServices.length} सेवा अनुरोध एक सहमति वाली पहचान और लाइसेंस रिकॉर्ड उपयोग करते हैं।`} /><Notice><strong>{en ? "Test OTP: 482916" : "टेस्ट OTP: 482916"}</strong><p>{en ? "Mock identity adapter. No SMS is sent and no real mobile number is used." : "नकली पहचान सेवा। कोई SMS नहीं भेजा जाता और असली मोबाइल नंबर उपयोग नहीं होता।"}</p></Notice><Field label={en ? "Demo mobile number" : "डेमो मोबाइल नंबर"}><div className="input-with-badge"><input readOnly value="+91 90000 00000" /><MockBadge language={state.language} label="Mock identity" /></div></Field><label className="notice-confirm"><input checked={state.identityConsent} onChange={(event) => update({ identityConsent: event.target.checked })} type="checkbox" /><span>{en ? "I consent to retrieve Asha Verma's synthetic profile and licence record for the selected demo services." : "मैं चुनी गई डेमो सेवाओं के लिए आशा वर्मा की नकली प्रोफाइल और लाइसेंस रिकॉर्ड देखने की सहमति देता हूं।"}</span></label><Field label={en ? "6-digit test OTP" : "6 अंकों का टेस्ट OTP"} error={error}><input autoComplete="one-time-code" inputMode="numeric" maxLength={6} onChange={(event) => update({ otp: event.target.value.replace(/\D/g, "") })} value={state.otp} /></Field><button className="primary-button" onClick={onContinue} type="button">{en ? "Retrieve demo record" : "डेमो रिकॉर्ड पाएं"}<MagnifyingGlass size={18} weight="bold" /></button></section>;
 }
 
-function ApplicationStage({ state, update, onContinue }: StageProps & { onContinue: () => void }) {
+function DetailsStage({ state, update, error, onContinue }: StageProps & { error: string; onContinue: () => void }) {
   const en = state.language === "en";
-  return <section className="stage-section"><StageHeader icon={Receipt} language={state.language} title={en ? "Confirm only what is missing" : "केवल बाकी जानकारी की पुष्टि करें"} intro={en ? "We prefilled the retrieved synthetic record and generated one checklist." : "नकली रिकॉर्ड पहले से भरा है और एक चेकलिस्ट तैयार है।"} />
-    <div className="record-card"><div><span>{en ? "Record holder" : "रिकॉर्ड धारक"}</span><strong>Asha Verma</strong></div><div><span>{en ? "Vehicle class" : "वाहन वर्ग"}</span><strong>LMV</strong></div><div><span>{en ? "Source" : "स्रोत"}</span><strong>Mock Sarathi adapter</strong></div><MockBadge language={state.language} /></div>
-    <div className="checklist"><h2>{en ? "Your combined checklist" : "आपकी पूरी चेकलिस्ट"}</h2><ul><li><CheckCircle size={20} weight="fill" />{en ? "Valid Learner's Licence held for 30 days" : "30 दिन पुराना वैध लर्नर लाइसेंस"}</li><li><CheckCircle size={20} weight="fill" />{en ? "Generated address proof fixture" : "बनाया गया नकली पता प्रमाण"}</li><li><CheckCircle size={20} weight="fill" />{en ? "Generated photograph and signature fixture" : "बनाया गया नकली फोटो और हस्ताक्षर"}</li><li><CalendarCheck size={20} weight="fill" />{en ? "In-person driving test at RTO-TEST-01" : "RTO-TEST-01 पर ड्राइविंग टेस्ट"}</li></ul><small>{en ? "Rule source: Delhi pilot fixture. Effective 28 Aug 2026. Not nationwide guidance." : "नियम स्रोत: दिल्ली पायलट उदाहरण। 28 अगस्त 2026 से। पूरे भारत की जानकारी नहीं।"}</small></div>
-    <Field label={en ? "Current address" : "वर्तमान पता"} hint={en ? "Synthetic fixture only" : "केवल नकली जानकारी"}><textarea onChange={(e) => update({ address: e.target.value })} rows={3} value={state.address} /></Field>
-    <label className="notice-confirm"><input defaultChecked type="checkbox" /><span>{en ? "I will attend the offline driving test and carry the listed originals." : "मैं ऑफलाइन ड्राइविंग टेस्ट दूंगा और सूची में दिए मूल दस्तावेज लाऊंगा।"}</span></label>
-    <button className="primary-button" onClick={onContinue} type="button">{en ? "Add demo evidence" : "डेमो दस्तावेज जोड़ें"}<ArrowRight size={18} weight="bold" /></button>
-  </section>;
+  return (
+    <section className="stage-section">
+      <StageHeader icon={Receipt} language={state.language} title={en ? "Give only the details each service needs" : "हर सेवा को जितनी जानकारी चाहिए उतनी ही दें"} intro={en ? "Common profile data is prefilled once; each service opens only its own missing fields." : "साझा प्रोफाइल एक बार भरी है; हर सेवा केवल अपनी बाकी जानकारी खोलती है।"} />
+      <div className="record-card"><div><span>{en ? "Record holder" : "रिकॉर्ड धारक"}</span><strong>Asha Verma</strong></div><div><span>{en ? "Existing DL" : "मौजूदा DL"}</span><strong>DL-0420260012345</strong></div><div><span>{en ? "Source" : "स्रोत"}</span><strong>Mock Sarathi adapter</strong></div><MockBadge language={state.language} /></div>
+      <div className="service-detail-stack">
+        {state.selectedServices.includes("ll_to_dl") ? <article><div className="detail-heading"><span>01</span><div><h2>{serviceLabel("ll_to_dl", state.language)}</h2><small>LP-SR-01</small></div></div><Field label={en ? "Current synthetic address" : "मौजूदा नकली पता"} hint={en ? "Used for this service request only" : "केवल इस सेवा अनुरोध के लिए"}><textarea onChange={(event) => update({ address: event.target.value })} rows={3} value={state.address} /></Field><p className="inline-requirement"><CalendarCheck size={20} />{en ? "This branch needs a simulated in-person driving test." : "इस शाखा में नकली व्यक्तिगत ड्राइविंग टेस्ट चाहिए।"}</p></article> : null}
+        {state.selectedServices.includes("duplicate") ? <article><div className="detail-heading"><span>02</span><div><h2>{serviceLabel("duplicate", state.language)}</h2><small>{en ? "Reason changes the evidence guidance" : "कारण से दस्तावेज निर्देश बदलते हैं"}</small></div></div><Field label={en ? "What happened to the demo licence?" : "डेमो लाइसेंस का क्या हुआ?"}><select onChange={(event) => update({ duplicateReason: event.target.value as JourneyState["duplicateReason"] })} value={state.duplicateReason}><option value="">{en ? "Choose a reason" : "कारण चुनें"}</option><option value="lost">{en ? "Lost" : "खो गया"}</option><option value="damaged">{en ? "Damaged or defaced" : "खराब हो गया"}</option></select></Field></article> : null}
+        {state.selectedServices.includes("name_change") ? <article><div className="detail-heading"><span>03</span><div><h2>{serviceLabel("name_change", state.language)}</h2><small>{en ? "Existing name: Asha Verma" : "मौजूदा नाम: आशा वर्मा"}</small></div></div><Field label={en ? "Corrected synthetic name" : "सही नकली नाम"}><input onChange={(event) => update({ newName: event.target.value })} value={state.newName} /></Field></article> : null}
+        {state.selectedServices.includes("address_change") ? <article><div className="detail-heading"><span>04</span><div><h2>{serviceLabel("address_change", state.language)}</h2><small>{en ? "Collected once for the address request" : "पता अनुरोध के लिए एक बार लिया गया"}</small></div></div><Field label={en ? "New synthetic address" : "नया नकली पता"}><textarea onChange={(event) => update({ newAddress: event.target.value })} rows={3} value={state.newAddress} /></Field></article> : null}
+        {state.selectedServices.includes("mobile_update") ? <article><div className="detail-heading"><span>05</span><div><h2>{serviceLabel("mobile_update", state.language)}</h2><small>{en ? "Mock notification adapter" : "नकली सूचना सेवा"}</small></div></div><Notice><strong>{en ? "Test OTP for the new mobile: 639204" : "नए मोबाइल का टेस्ट OTP: 639204"}</strong><p>{en ? "No real SMS is sent." : "कोई असली SMS नहीं भेजा जाता।"}</p></Notice><div className="form-grid"><Field label={en ? "New 10-digit demo mobile" : "नया 10 अंकों का डेमो मोबाइल"}><input inputMode="numeric" maxLength={10} onChange={(event) => update({ newMobile: event.target.value.replace(/\D/g, "") })} value={state.newMobile} /></Field><Field label={en ? "6-digit test OTP" : "6 अंकों का टेस्ट OTP"}><input inputMode="numeric" maxLength={6} onChange={(event) => update({ mobileOtp: event.target.value.replace(/\D/g, "") })} value={state.mobileOtp} /></Field></div></article> : null}
+      </div>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}<button className="primary-button" onClick={onContinue} type="button">{en ? "Build combined evidence checklist" : "संयुक्त दस्तावेज चेकलिस्ट बनाएं"}<ArrowRight size={18} weight="bold" /></button>
+    </section>
+  );
 }
 
-function EvidenceStage({ state, update, error, onContinue }: StageProps & { error: string; onContinue: () => void }) {
+function EvidenceStage({ state, update, required, error, onContinue }: StageProps & { required: EvidenceId[]; error: string; onContinue: () => void }) {
   const en = state.language === "en";
-  const docs: Array<[keyof Evidence, string, string]> = [["ll", en ? "Learner's Licence fixture" : "लर्नर लाइसेंस उदाहरण", "PDF, 184 KB"], ["photo", en ? "Photo and signature fixture" : "फोटो और हस्ताक्षर उदाहरण", "JPG, 96 KB"], ["address", en ? "Address proof fixture" : "पता प्रमाण उदाहरण", "PDF, 211 KB"]];
-  const setEvidence = (key: keyof Evidence) => update({ evidence: { ...state.evidence, [key]: !state.evidence[key] } });
-  return <section className="stage-section"><StageHeader icon={FileArrowUp} language={state.language} title={en ? "Use generated evidence only" : "केवल बनाए गए नकली दस्तावेज उपयोग करें"} intro={en ? "Each button attaches a safe fixture already included in the prototype." : "हर बटन प्रोटोटाइप में मौजूद सुरक्षित नकली फाइल जोड़ता है।"} />
-    <Notice tone="warning"><strong>{en ? "Never upload a real Aadhaar, PAN, licence or payment receipt." : "असली आधार, PAN, लाइसेंस या भुगतान रसीद कभी अपलोड न करें।"}</strong></Notice>
-    <div className="evidence-list">{docs.map(([key, label, meta]) => <article className={state.evidence[key] ? "attached" : ""} key={key}><div className="file-icon">{state.evidence[key] ? <Check size={22} weight="bold" /> : <FileArrowUp size={22} />}</div><div><strong>{label}</strong><small>{state.evidence[key] ? `${meta} | Quality check passed` : "PDF or JPG, maximum 2 MB"}</small></div><button className="secondary-button" onClick={() => setEvidence(key)} type="button">{state.evidence[key] ? (en ? "Remove" : "हटाएं") : (en ? "Attach fixture" : "उदाहरण जोड़ें")}</button></article>)}</div>
-    {error ? <p className="form-error" role="alert">{error}</p> : null}<button className="primary-button" onClick={onContinue} type="button">{en ? "Review fees" : "शुल्क देखें"}<ArrowRight size={18} weight="bold" /></button>
-  </section>;
+  const setEvidence = (evidenceId: EvidenceId) => update({ evidence: { ...state.evidence, [evidenceId]: !state.evidence[evidenceId] } });
+  return <section className="stage-section"><StageHeader icon={FileArrowUp} language={state.language} title={en ? "One combined evidence checklist" : "एक संयुक्त दस्तावेज चेकलिस्ट"} intro={en ? `The app deduplicated evidence across ${state.selectedServices.length} service requests.` : `ऐप ने ${state.selectedServices.length} सेवा अनुरोधों के दोहराए दस्तावेज हटा दिए।`} /><Notice tone="warning"><strong>{en ? "Never upload a real Aadhaar, PAN, licence or payment receipt." : "असली आधार, PAN, लाइसेंस या भुगतान रसीद कभी अपलोड न करें।"}</strong><p>{en ? "Every button below attaches a generated fixture already included in the demo." : "नीचे हर बटन डेमो में पहले से मौजूद नकली फाइल जोड़ता है।"}</p></Notice>{required.length > 0 ? <div className="evidence-list">{required.map((evidenceId) => { const copy = evidenceCopy[evidenceId]; const attached = Boolean(state.evidence[evidenceId]); return <article className={attached ? "attached" : ""} key={evidenceId}><div className="file-icon">{attached ? <Check size={22} weight="bold" /> : <FileArrowUp size={22} />}</div><div><strong>{en ? copy.en : copy.hi}</strong><small>{attached ? `${copy.meta} · ${en ? "Quality check passed" : "गुणवत्ता जांच पास"}` : "PDF or JPG · maximum 2 MB"}</small></div><button className="secondary-button" onClick={() => setEvidence(evidenceId)} type="button">{attached ? (en ? "Remove" : "हटाएं") : (en ? "Attach fixture" : "उदाहरण जोड़ें")}</button></article>; })}</div> : <div className="empty-evidence"><CheckCircle size={32} weight="fill" /><div><strong>{en ? "No document is required for this demo selection" : "इस डेमो चयन के लिए कोई दस्तावेज नहीं चाहिए"}</strong><p>{en ? "The verified synthetic mobile is enough for the selected branch." : "चुनी गई शाखा के लिए सत्यापित नकली मोबाइल पर्याप्त है।"}</p></div></div>}{error ? <p className="form-error" role="alert">{error}</p> : null}<button className="primary-button" onClick={onContinue} type="button">{en ? "Review illustrative fees" : "उदाहरण शुल्क देखें"}<ArrowRight size={18} weight="bold" /></button></section>;
 }
 
-function PaymentStage({ state, onPay, onReconcile, onContinue }: { state: JourneyState; onPay: () => void; onReconcile: () => void; onContinue: () => void }) {
-  const en = state.language === "en"; const status = state.caseData.payment.state;
-  return <section className="stage-section"><StageHeader icon={Receipt} language={state.language} title={en ? "Review before simulated payment" : "नकली भुगतान से पहले जांचें"} intro={en ? "Payment and submission are separate, so a gateway delay cannot create a second application." : "भुगतान और आवेदन अलग हैं, इसलिए देरी से दूसरा आवेदन नहीं बनता।"} />
-    <div className="fee-box"><div><span>{en ? "Application and test fee" : "आवेदन और टेस्ट शुल्क"}</span><strong>₹500</strong></div><div><span>{en ? "Card printing fixture" : "कार्ड प्रिंटिंग उदाहरण"}</span><strong>₹200</strong></div><div className="fee-total"><span>{en ? "Illustrative total" : "उदाहरण कुल"}</span><strong>₹700</strong></div><small>{en ? "Fees are mock values for this pilot fixture, not official guidance." : "यह शुल्क केवल नकली उदाहरण है, आधिकारिक जानकारी नहीं।"}</small></div>
-    {status === "not_started" ? <><Notice><strong>{en ? "Demo scenario" : "डेमो स्थिति"}</strong><p>{en ? "The first callback times out. You will reconcile it safely without paying again." : "पहला जवाब समय पर नहीं आएगा। दोबारा भुगतान किए बिना इसे जांचें।"}</p></Notice><button className="primary-button" onClick={onPay} type="button">{en ? "Simulate payment" : "नकली भुगतान करें"}<ArrowRight size={18} /></button></> : null}
-    {status === "pending" ? <><div className="status-panel pending"><CircleNotch aria-hidden="true" size={30} /><div><strong>{en ? "Payment confirmation pending" : "भुगतान की पुष्टि बाकी है"}</strong><p>{en ? "Do not pay again. Reference: MOCK-PAY-20260827-9912" : "दोबारा भुगतान न करें। संदर्भ: MOCK-PAY-20260827-9912"}</p></div><MockBadge language={state.language} /></div><button className="primary-button" onClick={onReconcile} type="button">{en ? "Check payment status" : "भुगतान की स्थिति देखें"}</button></> : null}
-    {status === "paid" ? <><div className="status-panel success"><CheckCircle aria-hidden="true" size={32} weight="fill" /><div><strong>{en ? "Payment found and reconciled" : "भुगतान मिला और पुष्टि हुई"}</strong><p>{en ? "One attempt, one receipt. No duplicate charge was created." : "एक कोशिश, एक रसीद। दोबारा शुल्क नहीं लगा।"}</p></div></div><a className="download-button" download href={en ? "/licencepath-demo-payment-receipt.txt" : "/licencepath-demo-payment-receipt-hi.txt"}><Receipt size={18} />{en ? "Download accessible demo receipt" : "सुलभ डेमो रसीद डाउनलोड करें"}</a><button className="primary-button" onClick={onContinue} type="button">{en ? "Continue to submission" : "आवेदन जमा करें"}<ArrowRight size={18} /></button></> : null}
-  </section>;
+function PaymentStage({ state, fees, onPay, onReconcile, onConfirmZeroFee, onContinue }: { state: JourneyState; fees: ReturnType<typeof feeBreakdown>; onPay: () => void; onReconcile: () => void; onConfirmZeroFee: () => void; onContinue: () => void }) {
+  const en = state.language === "en";
+  const status = state.caseData.payment.state;
+  return <section className="stage-section"><StageHeader icon={Receipt} language={state.language} title={en ? "Review the case before simulated payment" : "नकली भुगतान से पहले केस जांचें"} intro={en ? "Each service keeps its own fee line while payment and submission remain separate states." : "हर सेवा की अलग शुल्क पंक्ति है और भुगतान व आवेदन अलग स्थितियां हैं।"} /><div className="fee-box">{fees.lines.map((line) => <div key={line.serviceId}><span>{serviceLabel(line.serviceId, state.language)}</span><strong>₹{line.amount}</strong></div>)}<div className="fee-total"><span>{en ? "Illustrative total" : "उदाहरण कुल"}</span><strong>₹{fees.total}</strong></div><small>{en ? `Source: ${DEMO_RULE_PACK.id}. These are synthetic values, not official fees.` : `स्रोत: ${DEMO_RULE_PACK.id}। ये नकली मूल्य हैं, आधिकारिक शुल्क नहीं।`}</small></div>{status === "not_started" && fees.total > 0 ? <><Notice><strong>{en ? "Recovery scenario" : "समस्या समाधान स्थिति"}</strong><p>{en ? "The mock gateway first returns an uncertain result. The app checks the same reference instead of charging again." : "नकली भुगतान सेवा पहले अनिश्चित परिणाम देती है। ऐप दोबारा शुल्क लगाने की जगह उसी संदर्भ को जांचता है।"}</p></Notice><button className="primary-button" onClick={onPay} type="button">{en ? "Simulate payment" : "नकली भुगतान करें"}<ArrowRight size={18} /></button></> : null}{status === "not_started" && fees.total === 0 ? <><Notice tone="success"><strong>{en ? "No payment due in this demo rule pack" : "इस डेमो नियम पैक में कोई भुगतान नहीं"}</strong><p>{en ? "The zero-fee decision is still recorded before submission." : "शून्य शुल्क का निर्णय भी आवेदन से पहले रिकॉर्ड होगा।"}</p></Notice><button className="primary-button" onClick={onConfirmZeroFee} type="button">{en ? "Confirm no payment due" : "कोई भुगतान नहीं की पुष्टि करें"}</button></> : null}{status === "pending" ? <><div className="status-panel pending"><CircleNotch aria-hidden="true" size={30} /><div><strong>{en ? "Payment confirmation pending" : "भुगतान की पुष्टि बाकी है"}</strong><p>{en ? "Do not pay again. Reference: MOCK-PAY-20260828-9912" : "दोबारा भुगतान न करें। संदर्भ: MOCK-PAY-20260828-9912"}</p></div><MockBadge language={state.language} label="Mock payment" /></div><button className="primary-button" onClick={onReconcile} type="button">{en ? "Check the same payment reference" : "उसी भुगतान संदर्भ को जांचें"}</button></> : null}{status === "paid" ? <><div className="status-panel success"><CheckCircle aria-hidden="true" size={32} weight="fill" /><div><strong>{fees.total === 0 ? (en ? "Zero-fee decision recorded" : "शून्य शुल्क दर्ज हुआ") : (en ? "Payment found and reconciled" : "भुगतान मिला और पुष्टि हुई")}</strong><p>{en ? "The case is ready for one idempotent submission." : "केस एक सुरक्षित, दोहराव-रहित आवेदन के लिए तैयार है।"}</p></div></div>{fees.total > 0 ? <a className="download-button" download href={en ? "/licencepath-demo-payment-receipt.txt" : "/licencepath-demo-payment-receipt-hi.txt"}><Receipt size={18} />{en ? "Download accessible demo receipt" : "सुलभ डेमो रसीद डाउनलोड करें"}</a> : null}<button className="primary-button" onClick={onContinue} type="button">{en ? "Continue to submission" : "आवेदन जमा करें"}<ArrowRight size={18} /></button></> : null}</section>;
 }
 
-function SubmissionStage({ state, update, error, onSubmit, onContinue }: StageProps & { error: string; onSubmit: () => void; onContinue: () => void }) {
-  const en = state.language === "en"; const submitted = state.caseData.submission.state === "submitted";
-  return <section className="stage-section"><StageHeader icon={CalendarCheck} language={state.language} title={en ? "Submit once, then book the test" : "एक बार जमा करें, फिर टेस्ट बुक करें"} intro={en ? "Repeated taps return the same case and application reference." : "बार-बार दबाने पर वही केस और आवेदन नंबर मिलता है।"} />
-    {!submitted ? <><div className="review-summary"><h2>{en ? "Plain-language review" : "आसान भाषा में जांच"}</h2><p><strong>Asha Verma</strong> is applying for a permanent LMV Driving Licence in the Delhi demo fixture.</p><p>{en ? "Payment is confirmed. Three generated evidence fixtures are attached. An in-person test is required." : "भुगतान की पुष्टि है। तीन नकली दस्तावेज जुड़े हैं। RTO में टेस्ट जरूरी है।"}</p></div><label className="notice-confirm"><input defaultChecked type="checkbox" /><span>{en ? "Asha confirms the information and submits this synthetic application." : "आशा जानकारी की पुष्टि करके यह नकली आवेदन जमा करती हैं।"}</span></label><button className="primary-button" onClick={onSubmit} type="button">{en ? "Submit demo application" : "डेमो आवेदन जमा करें"}<ShieldCheck size={18} /></button></> : null}
-    {submitted ? <><Notice tone="success"><strong>{en ? "Application submitted once" : "आवेदन एक बार जमा हुआ"}</strong><p>{state.caseData.submission.applicationId} <MockBadge language={state.language} /></p></Notice><Field label={en ? "Choose a simulated driving test slot" : "नकली ड्राइविंग टेस्ट स्लॉट चुनें"} error={error}><select onChange={(e) => update({ slot: e.target.value })} value={state.slot}><option value="">{en ? "Select a slot" : "स्लॉट चुनें"}</option><option value="2026-09-04T11:30">4 Sep 2026, 11:30 AM</option><option value="2026-09-05T09:00">5 Sep 2026, 9:00 AM</option></select></Field><Notice><strong>{en ? "At RTO-TEST-01" : "RTO-TEST-01 पर"}</strong><p>{en ? "Carry the demo checklist and arrive 30 minutes early. No real appointment exists." : "डेमो चेकलिस्ट लाएं और 30 मिनट पहले पहुंचें। कोई असली अपॉइंटमेंट नहीं है।"}</p></Notice><button className="primary-button" onClick={onContinue} type="button">{en ? "Book and track" : "बुक करें और स्थिति देखें"}<ArrowRight size={18} /></button></> : null}
-  </section>;
+function SubmissionStage({ state, update, requiresAppointment, error, onSubmit, onContinue }: StageProps & { requiresAppointment: boolean; error: string; onSubmit: () => void; onContinue: () => void }) {
+  const en = state.language === "en";
+  const submitted = state.caseData.submission.state === "submitted";
+  return <section className="stage-section"><StageHeader icon={CalendarCheck} language={state.language} title={en ? "Submit one case with independent service requests" : "अलग सेवा अनुरोधों वाला एक केस जमा करें"} intro={en ? "Repeated taps return the same case and application reference." : "बार-बार दबाने पर वही केस और आवेदन नंबर मिलता है।"} />{!submitted ? <><div className="review-summary"><h2>{en ? "Plain-language review" : "आसान भाषा में जांच"}</h2><p>{en ? `Asha Verma is submitting ${state.selectedServices.length} synthetic service request(s) in one case.` : `आशा वर्मा एक केस में ${state.selectedServices.length} नकली सेवा अनुरोध जमा कर रही हैं।`}</p><ul>{state.selectedServices.map((serviceId) => <li key={serviceId}><CheckCircle size={18} weight="fill" />{serviceLabel(serviceId, state.language)}</li>)}</ul><p>{en ? "Payment or the zero-fee decision is confirmed. Required generated evidence is attached." : "भुगतान या शून्य शुल्क की पुष्टि है। जरूरी नकली दस्तावेज जुड़े हैं।"}</p></div><label className="notice-confirm"><input defaultChecked type="checkbox" /><span>{en ? "Asha confirms the synthetic information and submits all selected requests." : "आशा नकली जानकारी की पुष्टि करके सभी चुने अनुरोध जमा करती हैं।"}</span></label><button className="primary-button" onClick={onSubmit} type="button">{en ? "Submit demo case once" : "डेमो केस एक बार जमा करें"}<ShieldCheck size={18} /></button></> : null}{submitted ? <><Notice tone="success"><strong>{en ? "Case submitted once" : "केस एक बार जमा हुआ"}</strong><p>{state.caseData.submission.applicationId} · {state.caseData.serviceRequests.length} {en ? "linked service requests" : "जुड़े सेवा अनुरोध"} <MockBadge language={state.language} label="Mock submission" /></p></Notice><div className="submitted-requests">{state.caseData.serviceRequests.map((request) => <article key={request.requestId}><span>{request.requestId}</span><strong>{serviceLabel(request.serviceId, state.language)}</strong><small>{en ? "Submitted · separately trackable" : "जमा · अलग से ट्रैक करने योग्य"}</small></article>)}</div>{requiresAppointment ? <><Field label={en ? "Choose a simulated driving test slot" : "नकली ड्राइविंग टेस्ट स्लॉट चुनें"} error={error}><select onChange={(event) => update({ slot: event.target.value })} value={state.slot}><option value="">{en ? "Select a slot" : "स्लॉट चुनें"}</option><option value="2026-09-04T11:30">4 Sep 2026, 11:30 AM</option><option value="2026-09-05T09:00">5 Sep 2026, 9:00 AM</option></select></Field><Notice><strong>{en ? "Mock appointment adapter · RTO-TEST-01" : "नकली अपॉइंटमेंट सेवा · RTO-TEST-01"}</strong><p>{en ? "No real appointment exists." : "कोई असली अपॉइंटमेंट नहीं है।"}</p></Notice></> : <Notice><strong>{en ? "No appointment required by this demo selection" : "इस डेमो चयन में अपॉइंटमेंट जरूरी नहीं"}</strong><p>{en ? "The case moves directly to scrutiny and status tracking." : "केस सीधे जांच और स्थिति ट्रैकिंग पर जाता है।"}</p></Notice>}<button className="primary-button" onClick={onContinue} type="button">{requiresAppointment ? (en ? "Book and track all requests" : "बुक करें और सभी अनुरोध ट्रैक करें") : (en ? "Track all requests" : "सभी अनुरोध ट्रैक करें")}<ArrowRight size={18} /></button></> : null}</section>;
 }
 
 function TrackingStage({ state, update, reset }: StageProps & { reset: () => void }) {
-  const en = state.language === "en"; const complete = state.outcomeIndex >= outcomeEvents.length - 1; const nextEvent = () => update({ outcomeIndex: Math.min(state.outcomeIndex + 1, outcomeEvents.length - 1) });
-  return <section className="stage-section"><StageHeader icon={CheckCircle} language={state.language} title={complete ? (en ? "Licence delivered" : "लाइसेंस डिलीवर हुआ") : (en ? "Track one clear timeline" : "एक साफ टाइमलाइन में स्थिति देखें")} intro={complete ? (en ? "The complete citizen journey has reached a clear outcome." : "नागरिक की पूरी यात्रा स्पष्ट परिणाम तक पहुंच गई है।") : (en ? "Every event shows the owner, time and next action." : "हर घटना में जिम्मेदार व्यक्ति, समय और अगला काम दिखता है।")} />
-    <div className="next-action"><span>{en ? "Next action" : "अगला काम"}</span><strong>{complete ? (en ? "No action needed" : "कोई काम बाकी नहीं") : (en ? "Advance the mock status event" : "नकली स्थिति आगे बढ़ाएं")}</strong><small>{complete ? (en ? "Case closed safely" : "केस सुरक्षित रूप से बंद") : (en ? "Owner: Mock service simulator" : "जिम्मेदार: नकली सेवा सिम्युलेटर")}</small></div>
-    <ol className="timeline">{outcomeEvents.map((event, index) => <li className={index <= state.outcomeIndex ? "reached" : "future"} key={event.en}><span className="timeline-marker">{index <= state.outcomeIndex ? <Check size={15} weight="bold" /> : index + 1}</span><div><strong>{state.language === "en" ? event.en : event.hi}</strong><p>{event.owner} <span>|</span> {event.time}</p></div>{index <= state.outcomeIndex ? <MockBadge language={state.language} /> : null}</li>)}</ol>
-    {!complete ? <button className="primary-button" onClick={nextEvent} type="button">{en ? "Advance mock event" : "नकली स्थिति आगे बढ़ाएं"}<ArrowRight size={18} /></button> : <div className="completion-box"><CheckCircle size={44} weight="fill" /><h2>{en ? "A complete and recoverable journey" : "पूरी और सुरक्षित यात्रा"}</h2><p>{en ? "Asha checked eligibility, recovered a pending payment, submitted once, booked the test and tracked delivery." : "आशा ने पात्रता जांची, रुका भुगतान पाया, एक बार आवेदन किया, टेस्ट बुक किया और डिलीवरी देखी।"}</p><div><button className="secondary-button" onClick={reset} type="button">{en ? "Restart demo" : "डेमो फिर शुरू करें"}</button><Link className="primary-link" href={en ? "/about" : "/about/hi"}>{en ? "See how it works" : "देखें यह कैसे काम करता है"}</Link></div></div>}
-  </section>;
+  const en = state.language === "en";
+  const events = buildOutcomeEvents(state.selectedServices, state.language);
+  const complete = state.outcomeIndex >= events.length - 1;
+  const nextEvent = () => update({ outcomeIndex: Math.min(state.outcomeIndex + 1, events.length - 1) });
+  return <section className="stage-section"><StageHeader icon={CheckCircle} language={state.language} title={complete ? (en ? "Every service request is complete" : "हर सेवा अनुरोध पूरा हुआ") : (en ? "One timeline, clear branch ownership" : "एक टाइमलाइन, हर शाखा की साफ जिम्मेदारी")} intro={complete ? (en ? "The selected citizen journey reached a clear, recoverable outcome." : "चुनी गई नागरिक यात्रा स्पष्ट, सुरक्षित परिणाम तक पहुंची।") : (en ? "Each event names the service owner and dependency behind the next action." : "हर घटना अगले काम के जिम्मेदार और सेवा का नाम बताती है।")} /><div className="next-action"><span>{en ? "Next action" : "अगला काम"}</span><strong>{complete ? (en ? "No action needed" : "कोई काम बाकी नहीं") : events[state.outcomeIndex + 1]?.label}</strong><small>{complete ? (en ? "Case closed safely" : "केस सुरक्षित रूप से बंद") : `${en ? "Owner" : "जिम्मेदार"}: ${events[state.outcomeIndex + 1]?.owner}`}</small></div><ol className="timeline">{events.map((event, index) => <li className={index <= state.outcomeIndex ? "reached" : "future"} key={`${event.label}-${index}`}><span className="timeline-marker">{index <= state.outcomeIndex ? <Check size={15} weight="bold" /> : index + 1}</span><div><strong>{event.label}</strong><p>{event.owner} <span>·</span> {event.time}</p></div>{index <= state.outcomeIndex ? <MockBadge language={state.language} /> : null}</li>)}</ol>{!complete ? <button className="primary-button" onClick={nextEvent} type="button">{en ? "Advance mock workflow" : "नकली प्रक्रिया आगे बढ़ाएं"}<ArrowRight size={18} /></button> : <div className="completion-box"><CheckCircle size={44} weight="fill" /><h2>{en ? "A complete, selectable citizen journey" : "पूरी, चुनी जा सकने वाली नागरिक यात्रा"}</h2><p>{en ? `Asha completed ${state.selectedServices.length} service request(s) through one case, with separate ownership and recovery at every handoff.` : `आशा ने एक केस में ${state.selectedServices.length} सेवा अनुरोध पूरे किए, हर चरण में अलग जिम्मेदारी और समाधान के साथ।`}</p><div><button className="secondary-button" onClick={reset} type="button">{en ? "Start another service plan" : "नई सेवा योजना शुरू करें"}</button><Link className="primary-link" href={en ? "/about" : "/about/hi"}>{en ? "See the scale-up architecture" : "बड़े स्तर की संरचना देखें"}</Link></div></div>}</section>;
 }
