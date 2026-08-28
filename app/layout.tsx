@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "LicencePath | Citizen-first driving licence prototype",
   description:
-    "An independent, unofficial prototype for a clearer Learner's Licence to Driving Licence journey in India.",
+    "An interactive, unofficial prototype for choosing and completing multiple driving licence services through one citizen case.",
 };
 
 export const viewport: Viewport = {

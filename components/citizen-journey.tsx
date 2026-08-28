@@ -24,7 +24,6 @@ import {
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useState } from "react";
 import {
-  beginPayment,
   caseIssuesPhysicalCard,
   caseRequiresAppointment,
   configureCaseServices,
@@ -32,16 +31,27 @@ import {
   DEMO_RULE_PACK,
   evaluateEligibility,
   feeBreakdown,
-  reconcilePayment,
   requiredEvidence,
-  submitApplication,
+  type DemoAuditEvent,
   type DemoCase,
+  type DemoOperation,
   type EvidenceId,
   type ServiceId,
 } from "@/lib/sarathi-domain";
 
 type Language = "en" | "hi";
 type Mode = "self" | "assisted";
+type DemoScenario =
+  | "eligible"
+  | "too_early"
+  | "expired"
+  | "invalid_record"
+  | "identity_mismatch"
+  | "unreadable_document"
+  | "no_slots"
+  | "test_failed"
+  | "correction_required"
+  | "dispatch_failed";
 type EvidenceState = Partial<Record<EvidenceId, boolean>>;
 
 type JourneyState = {
@@ -67,6 +77,10 @@ type JourneyState = {
   slot: string;
   outcomeIndex: number;
   grievanceId?: string;
+  grievanceCategory: "" | "payment" | "appointment" | "documents" | "status";
+  grievanceEvidence: boolean;
+  scenario: DemoScenario;
+  auditEvents: DemoAuditEvent[];
 };
 
 const STORAGE_KEY = "licencepath-demo-case-v2";
@@ -164,8 +178,8 @@ const translations = {
 function createDefaultCase(): DemoCase {
   const base: DemoCase = {
     caseId: "LP-DEMO-20260828-0001",
-    llNumber: "LL-DL99-2026-000123",
-    issueDate: "2026-07-29",
+    llNumber: "",
+    issueDate: "",
     serviceRequests: [],
     payment: { state: "not_started", attempts: 0 },
     submission: { state: "not_started" },
@@ -183,10 +197,10 @@ function createDefaultState(): JourneyState {
     acceptedNotice: false,
     helperConsent: false,
     selectedServices: ["ll_to_dl"],
-    issueDate: "2026-07-29",
+    issueDate: "",
     identityConsent: false,
     otp: "",
-    address: "18, Demo Lane, New Delhi 110001",
+    address: "",
     duplicateReason: "",
     newName: "Asha Mehra",
     newAddress: "42, Sample Road, New Delhi 110003",
@@ -196,11 +210,19 @@ function createDefaultState(): JourneyState {
     caseData: createDefaultCase(),
     slot: "",
     outcomeIndex: 0,
+    grievanceCategory: "",
+    grievanceEvidence: false,
+    scenario: "eligible",
+    auditEvents: [],
   };
 }
 
 function serviceLabel(serviceId: ServiceId, language: Language) {
   return serviceCopy[serviceId][language];
+}
+
+function serviceRequestCount(count: number) {
+  return `${count} service request${count === 1 ? "" : "s"}`;
 }
 
 function paymentLabel(state: DemoCase["payment"]["state"], language: Language) {
@@ -255,12 +277,12 @@ function StageHeader({ icon: Icon, title, intro, language }: { icon: typeof Info
   return (
     <header className="stage-header">
       <div className="stage-icon"><Icon aria-hidden="true" size={28} weight="duotone" /></div>
-      <div><MockBadge language={language} label={language === "en" ? "Interactive demo" : "इंटरैक्टिव डेमो"} /><h1>{title}</h1><p>{intro}</p></div>
+      <div><MockBadge language={language} label={language === "en" ? "Interactive demo" : "इंटरैक्टिव डेमो"} /><h1>{title}</h1><p>{intro.replace("1 service requests", "1 service request")}</p></div>
     </header>
   );
 }
 
-function buildOutcomeEvents(selectedServices: ServiceId[], language: Language) {
+function buildOutcomeEvents(selectedServices: ServiceId[], language: Language, scenario: DemoScenario) {
   const en = language === "en";
   const events: Array<{ label: string; owner: string; time: string }> = [
     { label: en ? "Application case accepted" : "आवेदन केस स्वीकार हुआ", owner: "Mock workflow queue", time: "28 Aug, 10:42" },
@@ -273,6 +295,27 @@ function buildOutcomeEvents(selectedServices: ServiceId[], language: Language) {
       { label: en ? "Driving test passed" : "ड्राइविंग टेस्ट पास हुआ", owner: "Mock RTO", time: "4 Sep, 12:10" },
       { label: en ? "Permanent DL approved" : "स्थायी DL स्वीकृत हुआ", owner: "Mock Sarathi adapter", time: "4 Sep, 12:14" },
     );
+  }
+  if (scenario === "test_failed") {
+    return [
+      ...events.slice(0, 3),
+      { label: en ? "Driving test not cleared" : "ड्राइविंग टेस्ट पास नहीं हुआ", owner: "Mock RTO", time: "4 Sep, 12:10" },
+      { label: en ? "Citizen can book a new attempt" : "नागरिक नई कोशिश बुक कर सकता है", owner: "Citizen", time: "After the configured waiting period" },
+    ];
+  }
+  if (scenario === "correction_required") {
+    return [
+      ...events.slice(0, 2),
+      { label: en ? "Application returned for address correction" : "पते में सुधार के लिए आवेदन वापस आया", owner: "Mock RTO scrutiny desk", time: "29 Aug, 14:05" },
+      { label: en ? "Correct the saved address; do not submit a new application" : "सेव पता सुधारें; नया आवेदन न बनाएं", owner: "Citizen", time: "Next action" },
+    ];
+  }
+  if (scenario === "dispatch_failed") {
+    return [
+      ...events.slice(0, 5),
+      { label: en ? "Card delivery attempt failed" : "कार्ड डिलीवरी की कोशिश असफल हुई", owner: "Mock carrier", time: "8 Sep, 16:22" },
+      { label: en ? "Confirm the delivery address or raise a dispatch grievance" : "डिलीवरी पता जांचें या शिकायत दर्ज करें", owner: "Citizen", time: "Next action" },
+    ];
   }
   if (selectedServices.includes("duplicate")) events.push({ label: en ? "Replacement request approved" : "बदलाव अनुरोध स्वीकृत हुआ", owner: "Mock RTO desk", time: "4 Sep, 12:18" });
   if (selectedServices.includes("name_change")) events.push({ label: en ? "Name updated on the licence record" : "लाइसेंस रिकॉर्ड पर नाम बदला", owner: "Mock Sarathi adapter", time: "4 Sep, 12:20" });
@@ -290,10 +333,12 @@ function buildOutcomeEvents(selectedServices: ServiceId[], language: Language) {
 
 type StageProps = { state: JourneyState; update: (next: Partial<JourneyState>) => void };
 
-export function CitizenJourney() {
+export function CitizenJourney({ requestedCaseId }: { requestedCaseId?: string }) {
   const [state, setState] = useState<JourneyState>(() => createDefaultState());
   const [hydrated, setHydrated] = useState(false);
   const [resumeFound, setResumeFound] = useState(false);
+  const [resumeCandidate, setResumeCandidate] = useState<JourneyState | null>(null);
+  const [serviceBusy, setServiceBusy] = useState<DemoOperation | null>(null);
   const [error, setError] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
   const [grievanceText, setGrievanceText] = useState("");
@@ -310,8 +355,13 @@ export function CitizenJourney() {
       try {
         const parsed = JSON.parse(saved) as JourneyState;
         if (!Array.isArray(parsed.selectedServices) || !parsed.caseData?.serviceRequests) throw new Error("Old demo state");
-        setState({ ...createDefaultState(), ...parsed });
-        setResumeFound(true);
+        const candidate = { ...createDefaultState(), ...parsed };
+        if (!requestedCaseId || candidate.caseData.caseId === requestedCaseId) {
+          setState(candidate);
+          setResumeCandidate(candidate);
+        } else {
+          setError("That synthetic case is not stored in this browser. Start a fresh demo here instead.");
+        }
       } catch {
         window.localStorage.removeItem(STORAGE_KEY);
       }
@@ -320,38 +370,22 @@ export function CitizenJourney() {
   }, []);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || resumeCandidate) return;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     document.documentElement.lang = state.language;
-  }, [hydrated, state]);
+  }, [hydrated, resumeCandidate, state]);
+
+  useEffect(() => {
+    if (!hydrated || resumeCandidate) return;
+    const path = state.stage > 0 ? `/case/${state.caseData.caseId}` : "/";
+    window.history.replaceState(null, "", path);
+  }, [hydrated, resumeCandidate, state.caseData.caseId, state.stage]);
 
   const update = (next: Partial<JourneyState>) => setState((current) => ({ ...current, ...next }));
   const go = (stage: number) => {
     setError("");
     update({ stage });
     window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const toggleService = (serviceId: ServiceId) => {
-    setState((current) => {
-      const selectedServices = current.selectedServices.includes(serviceId)
-        ? current.selectedServices.filter((id) => id !== serviceId)
-        : serviceOrder.filter((id) => [...current.selectedServices, serviceId].includes(id));
-      const resetCase = {
-        ...current.caseData,
-        payment: { state: "not_started" as const, attempts: 0 },
-        submission: { state: "not_started" as const },
-      };
-      return {
-        ...current,
-        selectedServices,
-        evidence: {},
-        slot: "",
-        outcomeIndex: 0,
-        caseData: configureCaseServices(resetCase, selectedServices),
-      };
-    });
-    setError("");
   };
 
   const begin = () => {
@@ -371,8 +405,15 @@ export function CitizenJourney() {
   };
 
   const confirmEligibility = () => {
+    if (!/^LL-DL99-2026-\d{6}$/.test(state.caseData.llNumber) || state.scenario === "invalid_record") {
+      setError(state.language === "en" ? "This synthetic Learner's Licence number was not found. Check the format or load a reviewer scenario; no case or payment was created." : "यह नकली लर्नर लाइसेंस नंबर नहीं मिला। प्रारूप जांचें; कोई केस या भुगतान नहीं बना।");
+      return;
+    }
     if (state.selectedServices.includes("ll_to_dl") && !eligibility.eligible) {
-      setError(state.language === "en" ? `The LL-to-DL request becomes eligible on ${eligibility.earliestDate}. No payment is needed today.` : `LL से DL अनुरोध ${eligibility.earliestDate} को पात्र होगा। आज भुगतान न करें।`);
+      const message = eligibility.expired
+        ? `This demo Learner's Licence expired on ${eligibility.expiryDate}. Start a new LL journey; payment is blocked.`
+        : `The LL-to-DL request becomes eligible on ${eligibility.earliestDate}. No payment is needed today.`;
+      setError(state.language === "en" ? message : `यह अनुरोध अभी आगे नहीं बढ़ सकता। डेमो नियम की तारीखें देखें; आज भुगतान न करें।`);
       return;
     }
     setState((current) => ({ ...current, stage: 2, caseData: { ...current.caseData, issueDate: current.issueDate } }));
@@ -380,6 +421,10 @@ export function CitizenJourney() {
   };
 
   const verifyIdentity = () => {
+    if (state.scenario === "identity_mismatch") {
+      setError(state.language === "en" ? "The retrieved name does not match this synthetic licence. Stop and review the record; nothing has been submitted." : "मिला नाम इस नकली लाइसेंस से मेल नहीं खाता। रिकॉर्ड जांचें; कुछ जमा नहीं हुआ।");
+      return;
+    }
     if (!state.identityConsent || state.otp !== "482916") {
       setError(state.language === "en" ? "Give consent and enter the displayed 6-digit test OTP." : "सहमति दें और दिखाया गया 6 अंकों का टेस्ट OTP दर्ज करें।");
       return;
@@ -389,6 +434,10 @@ export function CitizenJourney() {
 
   const continueDetails = () => {
     const en = state.language === "en";
+    if (state.address.trim().length < 8) {
+      setError(en ? "Enter the supplied synthetic address before continuing." : "आगे बढ़ने से पहले दी गई नकली पता जानकारी भरें।");
+      return;
+    }
     if (state.selectedServices.includes("duplicate") && !state.duplicateReason) {
       setError(en ? "Choose whether the demo licence was lost or damaged." : "चुनें कि डेमो लाइसेंस खोया है या खराब हुआ है।");
       return;
@@ -413,13 +462,35 @@ export function CitizenJourney() {
       setError(state.language === "en" ? "Attach every generated fixture in your combined checklist." : "संयुक्त चेकलिस्ट के सभी नकली दस्तावेज जोड़ें।");
       return;
     }
+    if (state.scenario === "unreadable_document") {
+      setError(state.language === "en" ? "The address fixture is unreadable. Remove it and choose ‘Mark replacement readable’ in Demo controls before continuing." : "पता दस्तावेज पढ़ा नहीं जा सकता। इसे हटाएं और डेमो कंट्रोल से पठनीय उदाहरण चुनें।");
+      return;
+    }
     go(5);
   };
 
-  const pay = () => setState((current) => ({ ...current, caseData: beginPayment(current.caseData) }));
-  const reconcile = () => setState((current) => ({ ...current, caseData: reconcilePayment(current.caseData) }));
+  const runCaseOperation = async (operation: DemoOperation, idempotencyKey?: string) => {
+    setServiceBusy(operation);
+    setError("");
+    try {
+      const response = await fetch(`/api/demo/cases/${state.caseData.caseId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operation, caseData: state.caseData, idempotencyKey }),
+      });
+      const result = (await response.json()) as { caseData?: DemoCase; auditEvent?: DemoAuditEvent; error?: string };
+      if (!response.ok || !result.caseData || !result.auditEvent) throw new Error(result.error ?? "Mock service failed.");
+      setState((current) => ({ ...current, caseData: result.caseData!, auditEvents: [...current.auditEvents, result.auditEvent!] }));
+    } catch (operationError) {
+      setError(operationError instanceof Error ? operationError.message : "Mock service failed. Try again.");
+    } finally {
+      setServiceBusy(null);
+    }
+  };
+  const pay = () => void runCaseOperation("begin_payment");
+  const reconcile = () => void runCaseOperation("reconcile_payment");
   const confirmZeroFee = () => setState((current) => ({ ...current, caseData: confirmNoFee(current.caseData) }));
-  const submit = () => setState((current) => ({ ...current, caseData: submitApplication(current.caseData, "licencepath-demo-submit-v2") }));
+  const submit = () => void runCaseOperation("submit_application", "licencepath-demo-submit-v3");
 
   const continueAfterSubmission = () => {
     if (requiresAppointment && !state.slot) {
@@ -433,11 +504,47 @@ export function CitizenJourney() {
     window.localStorage.removeItem(STORAGE_KEY);
     setState(createDefaultState());
     setResumeFound(false);
+    setResumeCandidate(null);
+    setError("");
+    window.history.replaceState(null, "", "/");
+  };
+
+  const continueSavedDemo = () => {
+    if (!resumeCandidate) return;
+    setState(resumeCandidate);
+    setResumeFound(true);
+    setResumeCandidate(null);
+  };
+
+  const startFreshDemo = () => {
+    window.localStorage.removeItem(STORAGE_KEY);
+    setState(createDefaultState());
+    setResumeCandidate(null);
+    setResumeFound(false);
+    setError("");
+    window.history.replaceState(null, "", "/");
+  };
+
+  const applyScenario = (scenario: DemoScenario) => {
+    const values: Partial<JourneyState> = { scenario, evidence: {}, slot: "", outcomeIndex: 0 };
+    const llNumber = scenario === "invalid_record" ? "LL-INVALID" : "LL-DL99-2026-000123";
+    const issueDate = scenario === "too_early" ? "2026-08-20" : scenario === "expired" ? "2026-01-01" : "2026-07-29";
+    setState((current) => ({
+      ...current,
+      ...values,
+      issueDate: current.stage <= 1 ? issueDate : current.issueDate,
+      otp: scenario === "identity_mismatch" ? "482916" : current.otp,
+      address: current.address || "18, Demo Lane, New Delhi 110001",
+      caseData: current.stage <= 1
+        ? { ...createDefaultCase(), caseId: current.caseData.caseId, llNumber, issueDate }
+        : current.caseData,
+      auditEvents: current.stage <= 1 ? [] : current.auditEvents,
+    }));
     setError("");
   };
 
   const createGrievance = () => {
-    if (grievanceText.trim().length < 8) return;
+    if (!state.grievanceCategory || grievanceText.trim().length < 8) return;
     update({ grievanceId: "MOCK-GRV-20260828-014" });
     setHelpOpen(false);
     setGrievanceText("");
@@ -468,54 +575,68 @@ export function CitizenJourney() {
 
         <main id="main-content" className="journey-main" tabIndex={-1}>
           <div className="mobile-progress" aria-live="polite"><span>{state.stage + 1} / {t.stages.length}</span><strong>{t.stages[state.stage]}</strong></div>
+          <DemoControls state={state} applyScenario={applyScenario} onFillIdentity={() => update({ otp: "482916", address: "18, Demo Lane, New Delhi 110001" })} onAdvance={() => update({ outcomeIndex: state.outcomeIndex + 1 })} />
           {resumeFound && state.stage > 0 ? <Notice tone="success"><strong>{state.language === "en" ? "Your demo was restored." : "आपका डेमो फिर से खुल गया है।"}</strong><p>{state.language === "en" ? "Continue without entering the same information again." : "वही जानकारी दोबारा भरे बिना आगे बढ़ें।"}</p></Notice> : null}
 
-          {state.stage === 0 ? <StartStage state={state} update={update} error={error} toggleService={toggleService} onContinue={begin} /> : null}
-          {state.stage === 1 ? <EligibilityStage state={state} eligibility={eligibility} error={error} update={update} onContinue={confirmEligibility} /> : null}
-          {state.stage === 2 ? <IdentityStage state={state} update={update} error={error} onContinue={verifyIdentity} /> : null}
-          {state.stage === 3 ? <DetailsStage state={state} update={update} error={error} onContinue={continueDetails} /> : null}
-          {state.stage === 4 ? <EvidenceStage state={state} update={update} required={evidenceRequirements} error={error} onContinue={continueEvidence} /> : null}
-          {state.stage === 5 ? <PaymentStage state={state} fees={fees} onPay={pay} onReconcile={reconcile} onConfirmZeroFee={confirmZeroFee} onContinue={() => go(6)} /> : null}
-          {state.stage === 6 ? <SubmissionStage state={state} update={update} requiresAppointment={requiresAppointment} error={error} onSubmit={submit} onContinue={continueAfterSubmission} /> : null}
-          {state.stage === 7 ? <TrackingStage state={state} update={update} reset={resetDemo} /> : null}
+          {resumeCandidate ? <ResumeGate language={state.language} saved={resumeCandidate} onContinue={continueSavedDemo} onFresh={startFreshDemo} /> : <>
+            {state.stage === 0 ? <StartStage state={state} update={update} error={error} onContinue={begin} /> : null}
+            {state.stage === 1 ? <EligibilityStage state={state} eligibility={eligibility} error={error} update={update} onContinue={confirmEligibility} /> : null}
+            {state.stage === 2 ? <IdentityStage state={state} update={update} error={error} onContinue={verifyIdentity} /> : null}
+            {state.stage === 3 ? <DetailsStage state={state} update={update} error={error} onContinue={continueDetails} /> : null}
+            {state.stage === 4 ? <EvidenceStage state={state} update={update} required={evidenceRequirements} error={error} onContinue={continueEvidence} /> : null}
+            {state.stage === 5 ? <PaymentStage state={state} fees={fees} error={error} busy={serviceBusy} onPay={pay} onReconcile={reconcile} onConfirmZeroFee={confirmZeroFee} onContinue={() => go(6)} /> : null}
+            {state.stage === 6 ? <SubmissionStage state={state} update={update} requiresAppointment={requiresAppointment} error={error} busy={serviceBusy} onSubmit={submit} onContinue={continueAfterSubmission} onResolveSlots={() => update({ scenario: "eligible" })} /> : null}
+            {state.stage === 7 ? <TrackingStage state={state} reset={resetDemo} /> : null}
+          </>}
 
           {state.stage > 0 && state.stage < 7 ? <button className="back-button" onClick={() => go(state.stage - 1)} type="button"><ArrowLeft aria-hidden="true" size={18} />{t.back}</button> : null}
         </main>
 
         <aside className="context-panel" aria-label="Current case summary">
           <h2>{state.language === "en" ? "Your case" : "आपका केस"}</h2>
-          <p className="context-count">{state.selectedServices.length} {state.language === "en" ? "service request(s)" : "सेवा अनुरोध"}</p>
+          <p className="context-count">{state.language === "en" ? serviceRequestCount(state.selectedServices.length) : `${state.selectedServices.length} सेवा अनुरोध`}</p>
           <ul className="case-service-list">{state.selectedServices.map((serviceId) => <li key={serviceId}><span>{serviceLabel(serviceId, state.language)}</span><small>{state.caseData.serviceRequests.find((request) => request.serviceId === serviceId)?.requestId}</small></li>)}</ul>
           <dl><div><dt>{state.language === "en" ? "Rule pack" : "नियम पैक"}</dt><dd>{DEMO_RULE_PACK.id}</dd></div><div><dt>{state.language === "en" ? "Payment" : "भुगतान"}</dt><dd>{paymentLabel(state.caseData.payment.state, state.language)}</dd></div><div><dt>{state.language === "en" ? "Application" : "आवेदन"}</dt><dd>{state.caseData.submission.applicationId ?? (state.language === "en" ? "Not submitted" : "जमा नहीं हुआ")}</dd></div></dl>
+          <div className="audit-summary"><strong>{state.language === "en" ? "Mock service audit" : "नकली सेवा ऑडिट"}</strong><span>{state.auditEvents.length} {state.language === "en" ? "server-recorded operations" : "सर्वर संचालन"}</span>{state.auditEvents.slice(-3).map((event, index) => <small key={`${event.eventId}-${index}`}>{event.operation}: {event.result}</small>)}</div>
           <Notice><strong>{state.language === "en" ? "Nothing here reaches Sarathi." : "यहां से कुछ भी Sarathi तक नहीं जाता।"}</strong></Notice>
         </aside>
       </div>
 
       <button className="help-button" onClick={() => setHelpOpen(true)} type="button"><Lifebuoy aria-hidden="true" size={22} weight="duotone" />{t.help}</button>
-      {helpOpen ? <div className="modal-backdrop" role="presentation" onMouseDown={() => setHelpOpen(false)}><section aria-labelledby="help-title" aria-modal="true" className="help-modal" role="dialog" onMouseDown={(event) => event.stopPropagation()}><div className="modal-head"><div><MockBadge language={state.language} /><h2 id="help-title">{state.language === "en" ? "Get help with this step" : "इस चरण में मदद लें"}</h2></div><button aria-label="Close help" onClick={() => setHelpOpen(false)} type="button">×</button></div><p>{state.language === "en" ? "Create a synthetic grievance linked to this demo case. A mock service owner responds within 2 working days." : "इस डेमो केस से जुड़ी नकली शिकायत बनाएं। नकली सेवा अधिकारी 2 कार्य दिवस में जवाब देगा।"}</p><Field label={state.language === "en" ? "What went wrong?" : "क्या समस्या हुई?"} hint={state.language === "en" ? "Do not enter personal information." : "कोई निजी जानकारी न लिखें।"}><textarea value={grievanceText} onChange={(event) => setGrievanceText(event.target.value)} rows={4} /></Field><button className="primary-button" disabled={grievanceText.trim().length < 8} onClick={createGrievance} type="button">{state.language === "en" ? "Create demo grievance" : "डेमो शिकायत बनाएं"}</button></section></div> : null}
+      {helpOpen ? <div className="modal-backdrop" role="presentation" onMouseDown={() => setHelpOpen(false)}><section aria-labelledby="help-title" aria-modal="true" className="help-modal" role="dialog" onMouseDown={(event) => event.stopPropagation()}><div className="modal-head"><div><MockBadge language={state.language} /><h2 id="help-title">{state.language === "en" ? "Get help with this step" : "इस चरण में मदद लें"}</h2></div><button aria-label="Close help" onClick={() => setHelpOpen(false)} type="button">×</button></div>{state.grievanceId ? <Notice tone="success"><strong>{state.grievanceId}</strong><p>{state.language === "en" ? "Open · Owner: mock service desk · updates will appear in this case history." : "खुली · जिम्मेदार: नकली सेवा डेस्क · अपडेट केस इतिहास में दिखेंगे।"}</p></Notice> : <><p>{state.language === "en" ? "Create a synthetic grievance with a visible category, owner and reference. No response time is promised in this prototype." : "श्रेणी, जिम्मेदार और संदर्भ वाली नकली शिकायत बनाएं। इस प्रोटोटाइप में जवाब का समय तय नहीं है।"}</p><Field label={state.language === "en" ? "Issue category" : "समस्या श्रेणी"}><select value={state.grievanceCategory} onChange={(event) => update({ grievanceCategory: event.target.value as JourneyState["grievanceCategory"] })}><option value="">Choose a category</option><option value="payment">Payment</option><option value="appointment">Appointment</option><option value="documents">Documents</option><option value="status">Status or dispatch</option></select></Field><Field label={state.language === "en" ? "What went wrong?" : "क्या समस्या हुई?"} hint={state.language === "en" ? "Do not enter personal information." : "कोई निजी जानकारी न लिखें।"}><textarea value={grievanceText} onChange={(event) => setGrievanceText(event.target.value)} rows={4} /></Field><label className="check-row"><input checked={state.grievanceEvidence} onChange={(event) => update({ grievanceEvidence: event.target.checked })} type="checkbox" /><span><strong>{state.language === "en" ? "Attach generated case-history fixture" : "नकली केस इतिहास जोड़ें"}</strong><small>{state.language === "en" ? "No real document is uploaded." : "कोई असली दस्तावेज अपलोड नहीं होता।"}</small></span></label><button className="primary-button" disabled={!state.grievanceCategory || grievanceText.trim().length < 8} onClick={createGrievance} type="button">{state.language === "en" ? "Create demo grievance" : "डेमो शिकायत बनाएं"}</button></>}</section></div> : null}
     </div>
   );
 }
 
-function StartStage({ state, update, error, toggleService, onContinue }: StageProps & { error: string; toggleService: (serviceId: ServiceId) => void; onContinue: () => void }) {
+function ResumeGate({ language, saved, onContinue, onFresh }: { language: Language; saved: JourneyState; onContinue: () => void; onFresh: () => void }) {
+  const en = language === "en";
+  return <section className="stage-section"><StageHeader icon={ClockCountdown} language={language} title={en ? "A saved synthetic demo is in this browser" : "इस ब्राउज़र में सेव नकली डेमो है"} intro={en ? "Choose deliberately so one review run never contaminates the next." : "जानबूझकर चुनें ताकि एक समीक्षा अगली समीक्षा को प्रभावित न करे।"} /><Notice tone="warning"><strong>{saved.caseData.caseId}</strong><p>{en ? `Saved at step ${saved.stage + 1} of ${translations.en.stages.length}. This is browser-only synthetic data, not another citizen's record.` : `चरण ${saved.stage + 1} पर सेव। यह केवल ब्राउज़र की नकली जानकारी है, किसी नागरिक का रिकॉर्ड नहीं।`}</p></Notice><div className="resume-actions"><button className="primary-button" onClick={onContinue} type="button">{en ? "Continue saved demo" : "सेव डेमो जारी रखें"}</button><button className="secondary-button" onClick={onFresh} type="button">{en ? "Start new demo and clear saved data" : "नया डेमो शुरू करें और सेव डेटा हटाएं"}</button></div></section>;
+}
+
+function DemoControls({ state, applyScenario, onFillIdentity, onAdvance }: { state: JourneyState; applyScenario: (scenario: DemoScenario) => void; onFillIdentity: () => void; onAdvance: () => void }) {
+  const en = state.language === "en";
+  return <details className="demo-controls"><summary><Flask aria-hidden="true" size={17} />{en ? "Reviewer demo controls" : "समीक्षक डेमो कंट्रोल"}</summary><div><p>{en ? "These controls are outside the citizen journey. Load a condition, then observe the citizen-facing recovery path." : "ये कंट्रोल नागरिक यात्रा से अलग हैं। स्थिति चुनें और समाधान मार्ग देखें।"}</p><label><span>{en ? "Scenario" : "स्थिति"}</span><select value={state.scenario} onChange={(event) => applyScenario(event.target.value as DemoScenario)}><option value="eligible">Eligible, payment timeout</option><option value="too_early">Waiting period not complete</option><option value="expired">Learner's Licence expired</option><option value="invalid_record">Invalid LL number</option><option value="identity_mismatch">Retrieved person mismatch</option><option value="unreadable_document">Unreadable evidence</option><option value="no_slots">No appointment slots</option><option value="test_failed">Driving test not cleared</option><option value="correction_required">Returned for correction</option><option value="dispatch_failed">Dispatch failed</option></select></label><button className="secondary-button" onClick={() => applyScenario(state.scenario)} type="button">{en ? "Reload selected scenario inputs" : "चुनी स्थिति फिर लोड करें"}</button>{state.stage === 2 ? <button className="secondary-button" onClick={onFillIdentity} type="button">{en ? "Fill synthetic identity inputs" : "नकली पहचान जानकारी भरें"}</button> : null}{state.scenario === "unreadable_document" ? <button className="secondary-button" onClick={() => applyScenario("eligible")} type="button">{en ? "Mark replacement readable" : "नया दस्तावेज पठनीय मानें"}</button> : null}{state.stage === 7 ? <button className="secondary-button" onClick={onAdvance} type="button">{en ? "Send next provider event" : "अगला सेवा इवेंट भेजें"}</button> : null}<small>{en ? "All values, events and outcomes are synthetic." : "सभी जानकारी, इवेंट और परिणाम नकली हैं।"}</small></div></details>;
+}
+
+function StartStage({ state, update, error, onContinue }: StageProps & { error: string; onContinue: () => void }) {
   const en = state.language === "en";
   return (
     <section className="stage-section start-stage">
-      <StageHeader icon={ShieldCheck} language={state.language} title={en ? "Choose what you need — we build the journey" : "अपनी जरूरत चुनें — हम यात्रा बनाएंगे"} intro={en ? "Select one or several licence services. The app creates one case with a separate, trackable request for each service." : "एक या कई लाइसेंस सेवाएं चुनें। ऐप हर सेवा के लिए अलग, ट्रैक करने योग्य अनुरोध के साथ एक केस बनाता है।"} />
+      <StageHeader icon={ShieldCheck} language={state.language} title={en ? "Reach the driving test ready — without guessing" : "बिना अनुमान के ड्राइविंग टेस्ट तक तैयार होकर पहुंचें"} intro={en ? "For a first-time applicant, LicencePath checks when an LL-to-DL application is eligible, what evidence is needed and what happens after payment." : "पहली बार आवेदन करने वाले के लिए LicencePath पात्रता, दस्तावेज और भुगतान के बाद की कार्रवाई स्पष्ट करता है।"} />
 
       <div className="system-compare" aria-label={en ? "Current journey compared with LicencePath" : "मौजूदा यात्रा और LicencePath की तुलना"}>
-        <article><span>{en ? "PRD problem model" : "PRD समस्या मॉडल"}</span><h2>{en ? "How the current journey can feel" : "मौजूदा यात्रा कैसी लग सकती है"}</h2><ol><li>{en ? "Find the correct State or RTO service menu" : "सही राज्य या RTO सेवा मेनू खोजें"}</li><li>{en ? "Interpret eligibility and document rules" : "पात्रता और दस्तावेज नियम समझें"}</li><li>{en ? "Move through identity, payment, appointment and status handoffs" : "पहचान, भुगतान, अपॉइंटमेंट और स्थिति के बीच जाएं"}</li><li>{en ? "Recover using separate references or grievance paths" : "अलग संदर्भ या शिकायत मार्ग से समस्या सुलझाएं"}</li></ol><small>{en ? "This is the PRD's citizen problem statement, not a reverse-engineered claim about every State portal." : "यह PRD की नागरिक समस्या है, हर राज्य पोर्टल के बारे में रिवर्स-इंजीनियर किया गया दावा नहीं।"}</small></article>
-        <article className="proposed-flow"><span>{en ? "LicencePath proposal" : "LicencePath प्रस्ताव"}</span><h2>{en ? "One guided case" : "एक निर्देशित केस"}</h2><ol><li>{en ? "Choose goals in plain language" : "आसान भाषा में जरूरत चुनें"}</li><li>{en ? "Verify the common profile once" : "साझा प्रोफाइल एक बार जांचें"}</li><li>{en ? "Get one combined checklist and fee review" : "एक संयुक्त चेकलिस्ट और शुल्क देखें"}</li><li>{en ? "Track each request, owner and recovery action" : "हर अनुरोध, जिम्मेदार और समाधान देखें"}</li></ol></article>
+        <article><span>{en ? "Observed risk to test" : "जांचने योग्य जोखिम"}</span><h2>{en ? "A failed visit can start before the RTO" : "RTO से पहले ही यात्रा विफल हो सकती है"}</h2><ol><li>{en ? "Eligibility is understood too late" : "पात्रता देर से समझ आती है"}</li><li>{en ? "The evidence checklist is incomplete" : "दस्तावेज सूची अधूरी रहती है"}</li><li>{en ? "A timed-out payment looks unpaid" : "रुका भुगतान असफल लगता है"}</li><li>{en ? "The next owner or correction is unclear" : "अगली जिम्मेदारी या सुधार साफ नहीं"}</li></ol><small>{en ? "This is a product hypothesis, not validated user research. See About for the evidence gap." : "यह प्रोडक्ट परिकल्पना है, प्रमाणित यूज़र रिसर्च नहीं। प्रमाण की कमी About में देखें।"}</small></article>
+        <article className="proposed-flow"><span>{en ? "Focused prototype" : "केंद्रित प्रोटोटाइप"}</span><h2>{en ? "One LL-to-DL journey" : "एक LL से DL यात्रा"}</h2><ol><li>{en ? "Check the number and date before effort" : "मेहनत से पहले नंबर और तारीख जांचें"}</li><li>{en ? "Show the exact synthetic evidence list" : "सटीक नकली दस्तावेज सूची दिखाएं"}</li><li>{en ? "Reconcile one payment before retry" : "दोबारा भुगतान से पहले जांचें"}</li><li>{en ? "Show owner, next action and recovery" : "जिम्मेदार, अगला काम और समाधान दिखाएं"}</li></ol></article>
       </div>
 
       <fieldset className="choice-group"><legend>{en ? "Who is completing this?" : "यह आवेदन कौन पूरा कर रहा है?"}</legend><div className="choice-grid two"><label className={`choice-card ${state.mode === "self" ? "selected" : ""}`}><input checked={state.mode === "self"} name="mode" onChange={() => update({ mode: "self" })} type="radio" /><LockKey aria-hidden="true" size={26} weight="duotone" /><span><strong>{en ? "I am applying" : "मैं आवेदन कर रहा हूं"}</strong><small>{en ? "You control every confirmation." : "हर पुष्टि आपके नियंत्रण में है।"}</small></span></label><label className={`choice-card ${state.mode === "assisted" ? "selected" : ""}`}><input checked={state.mode === "assisted"} name="mode" onChange={() => update({ mode: "assisted" })} type="radio" /><HandHeart aria-hidden="true" size={26} weight="duotone" /><span><strong>{en ? "Someone is helping me" : "कोई मेरी मदद कर रहा है"}</strong><small>{en ? "The citizen still confirms consent, payment and submission." : "नागरिक सहमति, भुगतान और आवेदन की पुष्टि खुद करता है।"}</small></span></label></div></fieldset>
       {state.mode === "assisted" ? <Notice><label className="check-row"><input checked={state.helperConsent} onChange={(event) => update({ helperConsent: event.target.checked })} type="checkbox" /><span><strong>{en ? "I consent to assisted mode for 30 minutes." : "मैं 30 मिनट के सहायता मोड की सहमति देता हूं।"}</strong><small>{en ? "Demo helper: Neha Verma, family member. Actions appear in the audit trail." : "डेमो सहायक: नेहा वर्मा, परिवार की सदस्य। हर कार्रवाई रिकॉर्ड होगी।"}</small></span></label></Notice> : null}
 
-      <fieldset className="choice-group"><legend>{en ? "Which services do you need?" : "आपको कौन सी सेवाएं चाहिए?"}</legend><p className="group-hint">{en ? "Choose more than one to see a combined case. Bundling rules are illustrative and would be State/RTO-configured in production." : "संयुक्त केस देखने के लिए एक से अधिक चुनें। असल सेवा में जोड़ने के नियम राज्य/RTO के अनुसार होंगे।"}</p><div className="service-grid">{serviceOrder.map((serviceId) => { const selected = state.selectedServices.includes(serviceId); const copy = serviceCopy[serviceId]; return <label className={`service-choice ${selected ? "selected" : ""}`} key={serviceId}><input checked={selected} onChange={() => toggleService(serviceId)} type="checkbox" /><span><strong>{en ? copy.en : copy.hi}</strong><small>{en ? copy.descriptionEn : copy.descriptionHi}</small><em>₹{DEMO_RULE_PACK.services[serviceId].fee} {en ? "illustrative" : "उदाहरण"}</em></span>{selected ? <CheckCircle aria-hidden="true" size={24} weight="fill" /> : null}</label>; })}</div></fieldset>
-      <div className="selection-summary" aria-live="polite"><strong>{state.selectedServices.length}</strong><span>{en ? "service requests will share one case, identity check, evidence bundle and timeline." : "सेवा अनुरोध एक केस, पहचान जांच, दस्तावेज बंडल और टाइमलाइन साझा करेंगे।"}</span></div>
+      <section className="choice-group" aria-labelledby="scope-title"><h2 id="scope-title">{en ? "Prototype scope" : "प्रोटोटाइप दायरा"}</h2><div className="service-grid"><article className="service-choice selected"><span><strong>{en ? serviceCopy.ll_to_dl.en : serviceCopy.ll_to_dl.hi}</strong><small>{en ? serviceCopy.ll_to_dl.descriptionEn : serviceCopy.ll_to_dl.descriptionHi}</small><em>{en ? "Included and interactive" : "शामिल और इंटरैक्टिव"}</em></span><CheckCircle aria-hidden="true" size={24} weight="fill" /></article>{serviceOrder.filter((id) => id !== "ll_to_dl").map((serviceId) => { const copy = serviceCopy[serviceId]; return <article aria-disabled="true" className="service-choice unavailable" key={serviceId}><span><strong>{en ? copy.en : copy.hi}</strong><small>{en ? "Not included in this prototype." : "इस प्रोटोटाइप में शामिल नहीं।"}</small><em>{en ? "Future research" : "भविष्य शोध"}</em></span></article>; })}</div></section>
+      <div className="selection-summary" aria-live="polite"><strong>1</strong><span>{en ? "focused LL-to-DL request with eligibility, evidence, payment recovery, appointment and status exceptions." : "पात्रता, दस्तावेज, भुगतान समाधान, अपॉइंटमेंट और स्थिति वाली केंद्रित LL से DL यात्रा।"}</span></div>
       <label className="notice-confirm"><input checked={state.acceptedNotice} onChange={(event) => update({ acceptedNotice: event.target.checked })} type="checkbox" /><span>{en ? "I understand this is not an official service and I will use only the synthetic details provided." : "मैं समझता हूं कि यह आधिकारिक सेवा नहीं है और केवल दी गई नकली जानकारी का उपयोग करूंगा।"}</span></label>
       {error ? <p className="form-error" role="alert">{error}</p> : null}
-      <button className="primary-button" onClick={onContinue} type="button">{en ? "Build my service journey" : "मेरी सेवा यात्रा बनाएं"}<ArrowRight aria-hidden="true" size={18} weight="bold" /></button>
+      <button className="primary-button" onClick={onContinue} type="button">{en ? "Start the LL-to-DL check" : "LL से DL जांच शुरू करें"}<ArrowRight aria-hidden="true" size={18} weight="bold" /></button>
     </section>
   );
 }
@@ -524,9 +645,9 @@ function EligibilityStage({ state, eligibility, error, update, onContinue }: Sta
   const en = state.language === "en";
   return (
     <section className="stage-section">
-      <StageHeader icon={ClockCountdown} language={state.language} title={en ? "Check every request before effort or payment" : "मेहनत या भुगतान से पहले हर अनुरोध जांचें"} intro={en ? "The selected services are evaluated against one explicit, versioned demo rule pack." : "चुनी गई सेवाओं को एक स्पष्ट, संस्करण वाले डेमो नियम पैक से जांचा जाता है।"} />
-      <Notice tone="warning"><strong>{en ? "Illustrative jurisdiction rules" : "उदाहरण क्षेत्र नियम"}</strong><p>{DEMO_RULE_PACK.id} · {DEMO_RULE_PACK.source}. {en ? "Production must load authorised, current State/RTO rules." : "असल सेवा में अधिकृत, मौजूदा राज्य/RTO नियम लोड होंगे।"}</p></Notice>
-      {state.selectedServices.includes("ll_to_dl") ? <><div className="form-grid"><Field label={en ? "Synthetic Learner's Licence number" : "नकली लर्नर लाइसेंस नंबर"} hint={en ? "Provided by the mock record adapter" : "नकली रिकॉर्ड सेवा से मिला"}><div className="input-with-badge"><input readOnly value={state.caseData.llNumber} /><MockBadge language={state.language} label="Mock Sarathi" /></div></Field><Field label={en ? "Learner's Licence issue date" : "लर्नर लाइसेंस जारी होने की तारीख"}><input max={TODAY} onChange={(event) => update({ issueDate: event.target.value })} type="date" value={state.issueDate} /></Field></div><div className={`eligibility-result ${eligibility.eligible ? "eligible" : "not-eligible"}`} aria-live="polite"><span>{eligibility.eligible ? <CheckCircle size={30} weight="fill" /> : <ClockCountdown size={30} weight="fill" />}</span><div><strong>{eligibility.eligible ? (en ? "LL-to-DL request is eligible in this fixture" : "इस उदाहरण में LL से DL अनुरोध पात्र है") : (en ? "LL-to-DL request is not eligible yet" : "LL से DL अनुरोध अभी पात्र नहीं है")}</strong><p>{en ? `Held for ${eligibility.daysHeld} days. Earliest demo date: ${eligibility.earliestDate}.` : `${eligibility.daysHeld} दिन पूरे हुए। पहली डेमो तारीख: ${eligibility.earliestDate}.`}</p></div></div>{!eligibility.eligible ? <button className="text-button" onClick={() => update({ issueDate: "2026-07-29" })} type="button">{en ? "Use the eligible demo date" : "पात्र डेमो तारीख चुनें"}</button> : null}</> : null}
+      <StageHeader icon={ClockCountdown} language={state.language} title={en ? "Check the licence and date before collecting evidence" : "दस्तावेज लेने से पहले लाइसेंस और तारीख जांचें"} intro={en ? "Enter the supplied synthetic details. Your inputs now determine whether the journey can continue." : "दी गई नकली जानकारी भरें। आपकी जानकारी तय करेगी कि यात्रा आगे बढ़ सकती है या नहीं।"} />
+      <Notice tone="warning"><strong>{en ? "Delhi was chosen only as a bounded test fixture" : "दिल्ली केवल सीमित टेस्ट उदाहरण है"}</strong><p>{DEMO_RULE_PACK.id} · {en ? "unverified illustrative rules. A transport authority must approve every source, effective date and change before production." : "असत्यापित उदाहरण नियम। असल सेवा से पहले परिवहन अधिकारी हर स्रोत, तारीख और बदलाव मंजूर करेगा।"}</p></Notice>
+      {state.selectedServices.includes("ll_to_dl") ? <><div className="form-grid"><Field label={en ? "Synthetic Learner's Licence number" : "नकली लर्नर लाइसेंस नंबर"} hint={en ? "Expected demo format: LL-DL99-2026-000123" : "डेमो प्रारूप: LL-DL99-2026-000123"}><input onChange={(event) => update({ caseData: { ...state.caseData, llNumber: event.target.value.toUpperCase() } })} value={state.caseData.llNumber} /></Field><Field label={en ? "Learner's Licence issue date" : "लर्नर लाइसेंस जारी होने की तारीख"}><input max={TODAY} onChange={(event) => update({ issueDate: event.target.value })} type="date" value={state.issueDate} /></Field></div>{state.issueDate ? <div className={`eligibility-result ${eligibility.eligible ? "eligible" : "not-eligible"}`} aria-live="polite"><span>{eligibility.eligible ? <CheckCircle size={30} weight="fill" /> : <ClockCountdown size={30} weight="fill" />}</span><div><strong>{eligibility.eligible ? (en ? "Eligible in this test fixture" : "इस टेस्ट उदाहरण में पात्र") : eligibility.expired ? (en ? "This test licence has expired" : "यह टेस्ट लाइसेंस समाप्त है") : (en ? "The waiting period is not complete" : "प्रतीक्षा अवधि पूरी नहीं हुई")}</strong><p>{en ? `Held for ${eligibility.daysHeld} days. Earliest: ${eligibility.earliestDate}; fixture expiry: ${eligibility.expiryDate}.` : `${eligibility.daysHeld} दिन। पहली तारीख: ${eligibility.earliestDate}; समाप्ति: ${eligibility.expiryDate}.`}</p></div></div> : <Notice><strong>{en ? "Enter a date to calculate the result" : "परिणाम के लिए तारीख भरें"}</strong></Notice>}</> : null}
       <div className="request-checks">{state.selectedServices.filter((id) => id !== "ll_to_dl").map((serviceId) => <article key={serviceId}><CheckCircle aria-hidden="true" size={22} weight="fill" /><div><strong>{serviceLabel(serviceId, state.language)}</strong><p>{en ? "Available in this demo rule pack. Details and evidence are checked next." : "इस डेमो नियम पैक में उपलब्ध। आगे जानकारी और दस्तावेज जांचे जाएंगे।"}</p></div><MockBadge language={state.language} label={en ? "Configured rule" : "सेट नियम"} /></article>)}</div>
       {error ? <p className="form-error" role="alert">{error}</p> : null}<button className="primary-button" onClick={onContinue} type="button">{en ? "Continue to identity" : "पहचान पर जाएं"}<ArrowRight size={18} weight="bold" /></button>
     </section>
@@ -535,7 +656,7 @@ function EligibilityStage({ state, eligibility, error, update, onContinue }: Sta
 
 function IdentityStage({ state, update, error, onContinue }: StageProps & { error: string; onContinue: () => void }) {
   const en = state.language === "en";
-  return <section className="stage-section"><StageHeader icon={LockKey} language={state.language} title={en ? "Retrieve the common demo profile once" : "साझा डेमो प्रोफाइल एक बार पाएं"} intro={en ? `${state.selectedServices.length} service requests reuse one consented identity and licence record.` : `${state.selectedServices.length} सेवा अनुरोध एक सहमति वाली पहचान और लाइसेंस रिकॉर्ड उपयोग करते हैं।`} /><Notice><strong>{en ? "Test OTP: 482916" : "टेस्ट OTP: 482916"}</strong><p>{en ? "Mock identity adapter. No SMS is sent and no real mobile number is used." : "नकली पहचान सेवा। कोई SMS नहीं भेजा जाता और असली मोबाइल नंबर उपयोग नहीं होता।"}</p></Notice><Field label={en ? "Demo mobile number" : "डेमो मोबाइल नंबर"}><div className="input-with-badge"><input readOnly value="+91 90000 00000" /><MockBadge language={state.language} label="Mock identity" /></div></Field><label className="notice-confirm"><input checked={state.identityConsent} onChange={(event) => update({ identityConsent: event.target.checked })} type="checkbox" /><span>{en ? "I consent to retrieve Asha Verma's synthetic profile and licence record for the selected demo services." : "मैं चुनी गई डेमो सेवाओं के लिए आशा वर्मा की नकली प्रोफाइल और लाइसेंस रिकॉर्ड देखने की सहमति देता हूं।"}</span></label><Field label={en ? "6-digit test OTP" : "6 अंकों का टेस्ट OTP"} error={error}><input autoComplete="one-time-code" inputMode="numeric" maxLength={6} onChange={(event) => update({ otp: event.target.value.replace(/\D/g, "") })} value={state.otp} /></Field><button className="primary-button" onClick={onContinue} type="button">{en ? "Retrieve demo record" : "डेमो रिकॉर्ड पाएं"}<MagnifyingGlass size={18} weight="bold" /></button></section>;
+  return <section className="stage-section"><StageHeader icon={LockKey} language={state.language} title={en ? "Retrieve the synthetic profile with explicit consent" : "स्पष्ट सहमति से नकली प्रोफाइल पाएं"} intro={en ? "The citizen enters a test credential; it is not printed inside the citizen-facing instructions." : "नागरिक टेस्ट जानकारी भरता है; यह नागरिक निर्देश में छपी नहीं है।"} /><Notice><strong>{en ? "Mock identity adapter" : "नकली पहचान सेवा"}</strong><p>{en ? "No SMS is sent. A reviewer can fill the synthetic credential from Demo controls above." : "कोई SMS नहीं भेजा जाता। समीक्षक ऊपर डेमो कंट्रोल से नकली जानकारी भर सकता है।"}</p></Notice><Field label={en ? "Demo mobile number" : "डेमो मोबाइल नंबर"}><div className="input-with-badge"><input readOnly value="+91 90000 00000" /><MockBadge language={state.language} label="Mock identity" /></div></Field><label className="notice-confirm"><input checked={state.identityConsent} onChange={(event) => update({ identityConsent: event.target.checked })} type="checkbox" /><span>{en ? "I consent to retrieve Asha Verma's synthetic profile and licence record for this demo." : "मैं इस डेमो के लिए आशा वर्मा की नकली प्रोफाइल और लाइसेंस रिकॉर्ड देखने की सहमति देता हूं।"}</span></label><Field label={en ? "6-digit test credential" : "6 अंकों की टेस्ट जानकारी"} error={error}><input autoComplete="one-time-code" inputMode="numeric" maxLength={6} onChange={(event) => update({ otp: event.target.value.replace(/\D/g, "") })} value={state.otp} /></Field><button className="primary-button" onClick={onContinue} type="button">{en ? "Retrieve demo record" : "डेमो रिकॉर्ड पाएं"}<MagnifyingGlass size={18} weight="bold" /></button></section>;
 }
 
 function DetailsStage({ state, update, error, onContinue }: StageProps & { error: string; onContinue: () => void }) {
@@ -559,25 +680,26 @@ function DetailsStage({ state, update, error, onContinue }: StageProps & { error
 function EvidenceStage({ state, update, required, error, onContinue }: StageProps & { required: EvidenceId[]; error: string; onContinue: () => void }) {
   const en = state.language === "en";
   const setEvidence = (evidenceId: EvidenceId) => update({ evidence: { ...state.evidence, [evidenceId]: !state.evidence[evidenceId] } });
-  return <section className="stage-section"><StageHeader icon={FileArrowUp} language={state.language} title={en ? "One combined evidence checklist" : "एक संयुक्त दस्तावेज चेकलिस्ट"} intro={en ? `The app deduplicated evidence across ${state.selectedServices.length} service requests.` : `ऐप ने ${state.selectedServices.length} सेवा अनुरोधों के दोहराए दस्तावेज हटा दिए।`} /><Notice tone="warning"><strong>{en ? "Never upload a real Aadhaar, PAN, licence or payment receipt." : "असली आधार, PAN, लाइसेंस या भुगतान रसीद कभी अपलोड न करें।"}</strong><p>{en ? "Every button below attaches a generated fixture already included in the demo." : "नीचे हर बटन डेमो में पहले से मौजूद नकली फाइल जोड़ता है।"}</p></Notice>{required.length > 0 ? <div className="evidence-list">{required.map((evidenceId) => { const copy = evidenceCopy[evidenceId]; const attached = Boolean(state.evidence[evidenceId]); return <article className={attached ? "attached" : ""} key={evidenceId}><div className="file-icon">{attached ? <Check size={22} weight="bold" /> : <FileArrowUp size={22} />}</div><div><strong>{en ? copy.en : copy.hi}</strong><small>{attached ? `${copy.meta} · ${en ? "Quality check passed" : "गुणवत्ता जांच पास"}` : "PDF or JPG · maximum 2 MB"}</small></div><button className="secondary-button" onClick={() => setEvidence(evidenceId)} type="button">{attached ? (en ? "Remove" : "हटाएं") : (en ? "Attach fixture" : "उदाहरण जोड़ें")}</button></article>; })}</div> : <div className="empty-evidence"><CheckCircle size={32} weight="fill" /><div><strong>{en ? "No document is required for this demo selection" : "इस डेमो चयन के लिए कोई दस्तावेज नहीं चाहिए"}</strong><p>{en ? "The verified synthetic mobile is enough for the selected branch." : "चुनी गई शाखा के लिए सत्यापित नकली मोबाइल पर्याप्त है।"}</p></div></div>}{error ? <p className="form-error" role="alert">{error}</p> : null}<button className="primary-button" onClick={onContinue} type="button">{en ? "Review illustrative fees" : "उदाहरण शुल्क देखें"}<ArrowRight size={18} weight="bold" /></button></section>;
+  return <section className="stage-section"><StageHeader icon={FileArrowUp} language={state.language} title={en ? "Attach and check each required fixture" : "हर जरूरी उदाहरण जोड़ें और जांचें"} intro={en ? "The citizen must complete the checklist; the demo can also return a document as unreadable." : "नागरिक चेकलिस्ट पूरी करता है; डेमो दस्तावेज को अपठनीय भी लौटा सकता है।"} /><Notice tone="warning"><strong>{en ? "Never upload a real Aadhaar, PAN, licence or payment receipt." : "असली आधार, PAN, लाइसेंस या भुगतान रसीद कभी अपलोड न करें।"}</strong><p>{en ? "Every button below attaches a generated fixture already included in the demo." : "नीचे हर बटन डेमो में पहले से मौजूद नकली फाइल जोड़ता है।"}</p></Notice>{required.length > 0 ? <div className="evidence-list">{required.map((evidenceId) => { const copy = evidenceCopy[evidenceId]; const attached = Boolean(state.evidence[evidenceId]); const rejected = attached && state.scenario === "unreadable_document" && evidenceId === "address_proof"; return <article className={attached && !rejected ? "attached" : rejected ? "rejected" : ""} key={evidenceId}><div className="file-icon">{attached && !rejected ? <Check size={22} weight="bold" /> : <FileArrowUp size={22} />}</div><div><strong>{en ? copy.en : copy.hi}</strong><small>{rejected ? (en ? "Quality check failed · text is unreadable" : "गुणवत्ता जांच असफल · टेक्स्ट पढ़ा नहीं जा सकता") : attached ? `${copy.meta} · ${en ? "Quality check passed" : "गुणवत्ता जांच पास"}` : "PDF or JPG · maximum 2 MB"}</small></div><button className="secondary-button" onClick={() => setEvidence(evidenceId)} type="button">{attached ? (en ? "Remove" : "हटाएं") : (en ? "Attach fixture" : "उदाहरण जोड़ें")}</button></article>; })}</div> : null}{error ? <p className="form-error" role="alert">{error}</p> : null}<button className="primary-button" onClick={onContinue} type="button">{en ? "Review illustrative fees" : "उदाहरण शुल्क देखें"}<ArrowRight size={18} weight="bold" /></button></section>;
 }
 
-function PaymentStage({ state, fees, onPay, onReconcile, onConfirmZeroFee, onContinue }: { state: JourneyState; fees: ReturnType<typeof feeBreakdown>; onPay: () => void; onReconcile: () => void; onConfirmZeroFee: () => void; onContinue: () => void }) {
+function PaymentStage({ state, fees, error, busy, onPay, onReconcile, onConfirmZeroFee, onContinue }: { state: JourneyState; fees: ReturnType<typeof feeBreakdown>; error: string; busy: DemoOperation | null; onPay: () => void; onReconcile: () => void; onConfirmZeroFee: () => void; onContinue: () => void }) {
   const en = state.language === "en";
   const status = state.caseData.payment.state;
-  return <section className="stage-section"><StageHeader icon={Receipt} language={state.language} title={en ? "Review the case before simulated payment" : "नकली भुगतान से पहले केस जांचें"} intro={en ? "Each service keeps its own fee line while payment and submission remain separate states." : "हर सेवा की अलग शुल्क पंक्ति है और भुगतान व आवेदन अलग स्थितियां हैं।"} /><div className="fee-box">{fees.lines.map((line) => <div key={line.serviceId}><span>{serviceLabel(line.serviceId, state.language)}</span><strong>₹{line.amount}</strong></div>)}<div className="fee-total"><span>{en ? "Illustrative total" : "उदाहरण कुल"}</span><strong>₹{fees.total}</strong></div><small>{en ? `Source: ${DEMO_RULE_PACK.id}. These are synthetic values, not official fees.` : `स्रोत: ${DEMO_RULE_PACK.id}। ये नकली मूल्य हैं, आधिकारिक शुल्क नहीं।`}</small></div>{status === "not_started" && fees.total > 0 ? <><Notice><strong>{en ? "Recovery scenario" : "समस्या समाधान स्थिति"}</strong><p>{en ? "The mock gateway first returns an uncertain result. The app checks the same reference instead of charging again." : "नकली भुगतान सेवा पहले अनिश्चित परिणाम देती है। ऐप दोबारा शुल्क लगाने की जगह उसी संदर्भ को जांचता है।"}</p></Notice><button className="primary-button" onClick={onPay} type="button">{en ? "Simulate payment" : "नकली भुगतान करें"}<ArrowRight size={18} /></button></> : null}{status === "not_started" && fees.total === 0 ? <><Notice tone="success"><strong>{en ? "No payment due in this demo rule pack" : "इस डेमो नियम पैक में कोई भुगतान नहीं"}</strong><p>{en ? "The zero-fee decision is still recorded before submission." : "शून्य शुल्क का निर्णय भी आवेदन से पहले रिकॉर्ड होगा।"}</p></Notice><button className="primary-button" onClick={onConfirmZeroFee} type="button">{en ? "Confirm no payment due" : "कोई भुगतान नहीं की पुष्टि करें"}</button></> : null}{status === "pending" ? <><div className="status-panel pending"><CircleNotch aria-hidden="true" size={30} /><div><strong>{en ? "Payment confirmation pending" : "भुगतान की पुष्टि बाकी है"}</strong><p>{en ? "Do not pay again. Reference: MOCK-PAY-20260828-9912" : "दोबारा भुगतान न करें। संदर्भ: MOCK-PAY-20260828-9912"}</p></div><MockBadge language={state.language} label="Mock payment" /></div><button className="primary-button" onClick={onReconcile} type="button">{en ? "Check the same payment reference" : "उसी भुगतान संदर्भ को जांचें"}</button></> : null}{status === "paid" ? <><div className="status-panel success"><CheckCircle aria-hidden="true" size={32} weight="fill" /><div><strong>{fees.total === 0 ? (en ? "Zero-fee decision recorded" : "शून्य शुल्क दर्ज हुआ") : (en ? "Payment found and reconciled" : "भुगतान मिला और पुष्टि हुई")}</strong><p>{en ? "The case is ready for one idempotent submission." : "केस एक सुरक्षित, दोहराव-रहित आवेदन के लिए तैयार है।"}</p></div></div>{fees.total > 0 ? <a className="download-button" download href={en ? "/licencepath-demo-payment-receipt.txt" : "/licencepath-demo-payment-receipt-hi.txt"}><Receipt size={18} />{en ? "Download accessible demo receipt" : "सुलभ डेमो रसीद डाउनलोड करें"}</a> : null}<button className="primary-button" onClick={onContinue} type="button">{en ? "Continue to submission" : "आवेदन जमा करें"}<ArrowRight size={18} /></button></> : null}</section>;
+  return <section className="stage-section"><StageHeader icon={Receipt} language={state.language} title={en ? "Recover one uncertain payment — do not pay twice" : "अनिश्चित भुगतान जांचें — दो बार भुगतान न करें"} intro={en ? "This visible sequence calls the mock case API and records every operation in the audit panel." : "यह क्रम नकली केस API को कॉल करता है और हर कार्रवाई ऑडिट पैनल में दर्ज करता है।"} /><div className="fee-box">{fees.lines.map((line) => <div key={line.serviceId}><span>{serviceLabel(line.serviceId, state.language)}</span><strong>₹{line.amount}</strong></div>)}<div className="fee-total"><span>{en ? "Illustrative total" : "उदाहरण कुल"}</span><strong>₹{fees.total}</strong></div><small>{en ? `Source: ${DEMO_RULE_PACK.id}. Synthetic, not an official fee.` : `स्रोत: ${DEMO_RULE_PACK.id}। नकली, आधिकारिक शुल्क नहीं।`}</small></div>{status === "not_started" && fees.total > 0 ? <><ol className="recovery-steps"><li>{en ? "Start one mock payment" : "एक नकली भुगतान शुरू करें"}</li><li>{en ? "Gateway response times out" : "गेटवे जवाब रुकता है"}</li><li>{en ? "Reconcile the same reference" : "उसी संदर्भ की जांच करें"}</li></ol><button className="primary-button" disabled={busy !== null} onClick={onPay} type="button">{busy === "begin_payment" ? (en ? "Starting…" : "शुरू…") : (en ? "Start mock payment" : "नकली भुगतान शुरू करें")}<ArrowRight size={18} /></button></> : null}{status === "not_started" && fees.total === 0 ? <button className="primary-button" onClick={onConfirmZeroFee} type="button">{en ? "Confirm no payment due" : "कोई भुगतान नहीं की पुष्टि करें"}</button> : null}{status === "pending" ? <><div className="status-panel pending"><CircleNotch aria-hidden="true" size={30} /><div><strong>{en ? "Money debited; confirmation timed out" : "राशि कटी; पुष्टि रुक गई"}</strong><p>{en ? `Do not pay again. ${state.caseData.payment.gatewayReference} · attempt ${state.caseData.payment.attempts}` : `दोबारा भुगतान न करें। ${state.caseData.payment.gatewayReference}`}</p></div><MockBadge language={state.language} label="Mock API" /></div><button className="primary-button" disabled={busy !== null} onClick={onReconcile} type="button">{busy === "reconcile_payment" ? (en ? "Checking…" : "जांच…") : (en ? "Check existing payment" : "मौजूदा भुगतान जांचें")}</button></> : null}{status === "paid" ? <><div className="status-panel success"><CheckCircle aria-hidden="true" size={32} weight="fill" /><div><strong>{en ? "Existing payment found; no second charge" : "मौजूदा भुगतान मिला; दूसरी कटौती नहीं"}</strong><p>{en ? `One attempt remains recorded. Audit events: ${state.auditEvents.length}.` : `एक कोशिश दर्ज है। ऑडिट इवेंट: ${state.auditEvents.length}.`}</p></div></div><a className="download-button" download href={en ? "/licencepath-demo-payment-receipt.txt" : "/licencepath-demo-payment-receipt-hi.txt"}><Receipt size={18} />{en ? "Download accessible demo receipt" : "सुलभ डेमो रसीद डाउनलोड करें"}</a><button className="primary-button" onClick={onContinue} type="button">{en ? "Continue to submission" : "आवेदन जमा करें"}<ArrowRight size={18} /></button></> : null}{error ? <p className="form-error" role="alert">{error}</p> : null}</section>;
 }
 
-function SubmissionStage({ state, update, requiresAppointment, error, onSubmit, onContinue }: StageProps & { requiresAppointment: boolean; error: string; onSubmit: () => void; onContinue: () => void }) {
+function SubmissionStage({ state, update, requiresAppointment, error, busy, onSubmit, onContinue, onResolveSlots }: StageProps & { requiresAppointment: boolean; error: string; busy: DemoOperation | null; onSubmit: () => void; onContinue: () => void; onResolveSlots: () => void }) {
   const en = state.language === "en";
   const submitted = state.caseData.submission.state === "submitted";
-  return <section className="stage-section"><StageHeader icon={CalendarCheck} language={state.language} title={en ? "Submit one case with independent service requests" : "अलग सेवा अनुरोधों वाला एक केस जमा करें"} intro={en ? "Repeated taps return the same case and application reference." : "बार-बार दबाने पर वही केस और आवेदन नंबर मिलता है।"} />{!submitted ? <><div className="review-summary"><h2>{en ? "Plain-language review" : "आसान भाषा में जांच"}</h2><p>{en ? `Asha Verma is submitting ${state.selectedServices.length} synthetic service request(s) in one case.` : `आशा वर्मा एक केस में ${state.selectedServices.length} नकली सेवा अनुरोध जमा कर रही हैं।`}</p><ul>{state.selectedServices.map((serviceId) => <li key={serviceId}><CheckCircle size={18} weight="fill" />{serviceLabel(serviceId, state.language)}</li>)}</ul><p>{en ? "Payment or the zero-fee decision is confirmed. Required generated evidence is attached." : "भुगतान या शून्य शुल्क की पुष्टि है। जरूरी नकली दस्तावेज जुड़े हैं।"}</p></div><label className="notice-confirm"><input defaultChecked type="checkbox" /><span>{en ? "Asha confirms the synthetic information and submits all selected requests." : "आशा नकली जानकारी की पुष्टि करके सभी चुने अनुरोध जमा करती हैं।"}</span></label><button className="primary-button" onClick={onSubmit} type="button">{en ? "Submit demo case once" : "डेमो केस एक बार जमा करें"}<ShieldCheck size={18} /></button></> : null}{submitted ? <><Notice tone="success"><strong>{en ? "Case submitted once" : "केस एक बार जमा हुआ"}</strong><p>{state.caseData.submission.applicationId} · {state.caseData.serviceRequests.length} {en ? "linked service requests" : "जुड़े सेवा अनुरोध"} <MockBadge language={state.language} label="Mock submission" /></p></Notice><div className="submitted-requests">{state.caseData.serviceRequests.map((request) => <article key={request.requestId}><span>{request.requestId}</span><strong>{serviceLabel(request.serviceId, state.language)}</strong><small>{en ? "Submitted · separately trackable" : "जमा · अलग से ट्रैक करने योग्य"}</small></article>)}</div>{requiresAppointment ? <><Field label={en ? "Choose a simulated driving test slot" : "नकली ड्राइविंग टेस्ट स्लॉट चुनें"} error={error}><select onChange={(event) => update({ slot: event.target.value })} value={state.slot}><option value="">{en ? "Select a slot" : "स्लॉट चुनें"}</option><option value="2026-09-04T11:30">4 Sep 2026, 11:30 AM</option><option value="2026-09-05T09:00">5 Sep 2026, 9:00 AM</option></select></Field><Notice><strong>{en ? "Mock appointment adapter · RTO-TEST-01" : "नकली अपॉइंटमेंट सेवा · RTO-TEST-01"}</strong><p>{en ? "No real appointment exists." : "कोई असली अपॉइंटमेंट नहीं है।"}</p></Notice></> : <Notice><strong>{en ? "No appointment required by this demo selection" : "इस डेमो चयन में अपॉइंटमेंट जरूरी नहीं"}</strong><p>{en ? "The case moves directly to scrutiny and status tracking." : "केस सीधे जांच और स्थिति ट्रैकिंग पर जाता है।"}</p></Notice>}<button className="primary-button" onClick={onContinue} type="button">{requiresAppointment ? (en ? "Book and track all requests" : "बुक करें और सभी अनुरोध ट्रैक करें") : (en ? "Track all requests" : "सभी अनुरोध ट्रैक करें")}<ArrowRight size={18} /></button></> : null}</section>;
+  return <section className="stage-section"><StageHeader icon={CalendarCheck} language={state.language} title={en ? "Retry safely, then choose an appointment" : "सुरक्षित दोबारा कोशिश करें, फिर अपॉइंटमेंट चुनें"} intro={en ? "The mock case API exposes the idempotency key and returns the same application reference on retry." : "नकली केस API इडेम्पोटेंसी कुंजी दिखाता है और दोबारा कोशिश पर वही आवेदन संदर्भ देता है।"} />{!submitted ? <><div className="review-summary"><h2>{en ? "Plain-language review" : "आसान भाषा में जांच"}</h2><p>{en ? "Asha Verma is submitting one synthetic LL-to-DL request." : "आशा वर्मा एक नकली LL से DL अनुरोध जमा कर रही हैं।"}</p><p><strong>{en ? "Idempotency key:" : "इडेम्पोटेंसी कुंजी:"}</strong> licencepath-demo-submit-v3</p></div><button className="primary-button" disabled={busy !== null} onClick={onSubmit} type="button">{busy === "submit_application" ? (en ? "Submitting…" : "जमा…") : (en ? "Submit through mock case API" : "नकली केस API से जमा करें")}<ShieldCheck size={18} /></button></> : null}{submitted ? <><Notice tone="success"><strong>{en ? "Application created once" : "आवेदन एक बार बना"}</strong><p>{state.caseData.submission.applicationId} · {en ? "safe retries return this reference" : "सुरक्षित दोबारा कोशिश यही संदर्भ लौटाती है"} <MockBadge language={state.language} label="Mock API" /></p></Notice><button className="secondary-button" disabled={busy !== null} onClick={onSubmit} type="button">{en ? "Simulate interrupted connection and retry" : "रुका कनेक्शन और दोबारा कोशिश दिखाएं"}</button>{state.auditEvents.filter((event) => event.operation === "submit_application").length > 1 ? <Notice><strong>{en ? "Duplicate prevented" : "डुप्लिकेट रोका गया"}</strong><p>{en ? `Both calls used the same key and returned ${state.caseData.submission.applicationId}.` : `दोनों कॉल ने वही कुंजी उपयोग की और ${state.caseData.submission.applicationId} लौटाया।`}</p></Notice> : null}<Link className="case-link" href={`/case/${state.caseData.caseId}`}>{en ? "Open this addressable demo case" : "यह पता योग्य डेमो केस खोलें"}</Link><small className="case-link-note">{en ? "The URL is bookmarkable, but this prototype can recover details only from this browser. Production requires authenticated server storage." : "URL बुकमार्क हो सकता है, लेकिन विवरण केवल इसी ब्राउज़र से मिलेंगे। असल सेवा में सुरक्षित सर्वर स्टोरेज चाहिए।"}</small>{requiresAppointment && state.scenario === "no_slots" ? <Notice tone="warning"><strong>{en ? "No test slots are available" : "कोई टेस्ट स्लॉट उपलब्ध नहीं"}</strong><p>{en ? "The submitted application remains saved. Check another date or RTO; do not submit again." : "जमा आवेदन सेव है। दूसरी तारीख या RTO देखें; दोबारा जमा न करें।"}<button className="text-button" onClick={onResolveSlots} type="button">{en ? "Load later availability" : "बाद की उपलब्धता लोड करें"}</button></p></Notice> : requiresAppointment ? <><Field label={en ? "Choose a simulated driving test slot" : "नकली ड्राइविंग टेस्ट स्लॉट चुनें"} error={error}><select onChange={(event) => update({ slot: event.target.value })} value={state.slot}><option value="">{en ? "Select a slot" : "स्लॉट चुनें"}</option><option value="2026-09-04T11:30">4 Sep 2026, 11:30 AM · 6 places</option><option value="2026-09-05T09:00">5 Sep 2026, 9:00 AM · accessible assistance</option></select></Field><Notice><strong>{en ? "RTO-TEST-01 · arrive 30 minutes early" : "RTO-TEST-01 · 30 मिनट पहले पहुंचें"}</strong><p>{en ? "Bring the synthetic appointment receipt and original demo LL fixture. Rescheduling preserves the application reference." : "नकली अपॉइंटमेंट रसीद और मूल डेमो LL उदाहरण लाएं। तारीख बदलने पर आवेदन संदर्भ वही रहेगा।"}</p></Notice></> : null}{state.scenario !== "no_slots" ? <button className="primary-button" onClick={onContinue} type="button">{en ? "Book and open status" : "बुक करें और स्थिति खोलें"}<ArrowRight size={18} /></button> : null}</> : null}{error ? <p className="form-error" role="alert">{error}</p> : null}</section>;
 }
 
-function TrackingStage({ state, update, reset }: StageProps & { reset: () => void }) {
+function TrackingStage({ state, reset }: { state: JourneyState; reset: () => void }) {
   const en = state.language === "en";
-  const events = buildOutcomeEvents(state.selectedServices, state.language);
+  const events = buildOutcomeEvents(state.selectedServices, state.language, state.scenario);
   const complete = state.outcomeIndex >= events.length - 1;
-  const nextEvent = () => update({ outcomeIndex: Math.min(state.outcomeIndex + 1, events.length - 1) });
-  return <section className="stage-section"><StageHeader icon={CheckCircle} language={state.language} title={complete ? (en ? "Every service request is complete" : "हर सेवा अनुरोध पूरा हुआ") : (en ? "One timeline, clear branch ownership" : "एक टाइमलाइन, हर शाखा की साफ जिम्मेदारी")} intro={complete ? (en ? "The selected citizen journey reached a clear, recoverable outcome." : "चुनी गई नागरिक यात्रा स्पष्ट, सुरक्षित परिणाम तक पहुंची।") : (en ? "Each event names the service owner and dependency behind the next action." : "हर घटना अगले काम के जिम्मेदार और सेवा का नाम बताती है।")} /><div className="next-action"><span>{en ? "Next action" : "अगला काम"}</span><strong>{complete ? (en ? "No action needed" : "कोई काम बाकी नहीं") : events[state.outcomeIndex + 1]?.label}</strong><small>{complete ? (en ? "Case closed safely" : "केस सुरक्षित रूप से बंद") : `${en ? "Owner" : "जिम्मेदार"}: ${events[state.outcomeIndex + 1]?.owner}`}</small></div><ol className="timeline">{events.map((event, index) => <li className={index <= state.outcomeIndex ? "reached" : "future"} key={`${event.label}-${index}`}><span className="timeline-marker">{index <= state.outcomeIndex ? <Check size={15} weight="bold" /> : index + 1}</span><div><strong>{event.label}</strong><p>{event.owner} <span>·</span> {event.time}</p></div>{index <= state.outcomeIndex ? <MockBadge language={state.language} /> : null}</li>)}</ol>{!complete ? <button className="primary-button" onClick={nextEvent} type="button">{en ? "Advance mock workflow" : "नकली प्रक्रिया आगे बढ़ाएं"}<ArrowRight size={18} /></button> : <div className="completion-box"><CheckCircle size={44} weight="fill" /><h2>{en ? "A complete, selectable citizen journey" : "पूरी, चुनी जा सकने वाली नागरिक यात्रा"}</h2><p>{en ? `Asha completed ${state.selectedServices.length} service request(s) through one case, with separate ownership and recovery at every handoff.` : `आशा ने एक केस में ${state.selectedServices.length} सेवा अनुरोध पूरे किए, हर चरण में अलग जिम्मेदारी और समाधान के साथ।`}</p><div><button className="secondary-button" onClick={reset} type="button">{en ? "Start another service plan" : "नई सेवा योजना शुरू करें"}</button><Link className="primary-link" href={en ? "/about" : "/about/hi"}>{en ? "See the scale-up architecture" : "बड़े स्तर की संरचना देखें"}</Link></div></div>}</section>;
+  const visibleIndex = Math.min(state.outcomeIndex, events.length - 1);
+  const citizenActionScenario = ["test_failed", "correction_required", "dispatch_failed"].includes(state.scenario);
+  return <section className="stage-section"><StageHeader icon={citizenActionScenario ? Warning : CheckCircle} language={state.language} title={citizenActionScenario ? (en ? "The case needs attention — it is not lost" : "केस पर ध्यान चाहिए — यह खोया नहीं") : complete ? (en ? "The LL-to-DL request is complete" : "LL से DL अनुरोध पूरा हुआ") : (en ? "Status with an owner and next action" : "जिम्मेदार और अगले काम के साथ स्थिति")} intro={en ? "Provider events arrive through reviewer controls; the citizen view only explains what happened and what to do next." : "सेवा इवेंट समीक्षक कंट्रोल से आते हैं; नागरिक दृश्य केवल स्थिति और अगला काम बताता है।"} /><div className="next-action"><span>{en ? "Next action" : "अगला काम"}</span><strong>{events[visibleIndex + 1]?.label ?? (citizenActionScenario ? events[visibleIndex]?.label : (en ? "No action needed" : "कोई काम बाकी नहीं"))}</strong><small>{`${en ? "Owner" : "जिम्मेदार"}: ${events[visibleIndex + 1]?.owner ?? events[visibleIndex]?.owner}`}</small></div><ol className="timeline">{events.map((event, index) => <li className={index <= visibleIndex ? "reached" : "future"} key={`${event.label}-${index}`}><span className="timeline-marker">{index <= visibleIndex ? <Check size={15} weight="bold" /> : index + 1}</span><div><strong>{event.label}</strong><p>{event.owner} <span>·</span> {event.time}</p></div>{index <= visibleIndex ? <MockBadge language={state.language} /> : null}</li>)}</ol><Notice><strong>{en ? "Reviewer simulation is separate" : "समीक्षक सिमुलेशन अलग है"}</strong><p>{en ? "Open Demo controls above to send the next mock provider event. Citizens would receive events automatically or from authorised staff." : "अगला नकली इवेंट भेजने के लिए ऊपर डेमो कंट्रोल खोलें। नागरिकों को इवेंट स्वतः या अधिकृत कर्मचारी से मिलेंगे।"}</p></Notice>{complete && !citizenActionScenario ? <div className="completion-box"><CheckCircle size={44} weight="fill" /><h2>{en ? "Journey complete" : "यात्रा पूरी"}</h2><p>{en ? "The focused demo reached a clear outcome without hiding payment, submission or status recovery." : "केंद्रित डेमो ने भुगतान, आवेदन या स्थिति समाधान छिपाए बिना साफ परिणाम दिखाया।"}</p><button className="secondary-button" onClick={reset} type="button">{en ? "Start a fresh demo" : "नया डेमो शुरू करें"}</button></div> : null}</section>;
 }

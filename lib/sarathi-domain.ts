@@ -1,5 +1,14 @@
 export type PaymentState = "not_started" | "pending" | "paid" | "failed";
 export type SubmissionState = "not_started" | "queued" | "submitted";
+export type DemoOperation = "begin_payment" | "reconcile_payment" | "submit_application";
+
+export type DemoAuditEvent = {
+  eventId: string;
+  operation: DemoOperation;
+  result: string;
+  recordedAt: string;
+  idempotencyKey?: string;
+};
 
 export type ServiceId =
   | "ll_to_dl"
@@ -40,6 +49,12 @@ export const DEMO_RULE_PACK = {
   jurisdiction: "Delhi demo fixture",
   source: "PRD problem model — not verified nationwide guidance",
   effectiveDate: "2026-08-28",
+  reviewedBy: "Prototype product team — not a transport authority",
+  reviewStatus: "illustrative-unverified",
+  learnerLicence: {
+    minimumDaysHeld: 30,
+    validityDays: 180,
+  },
   services: {
     ll_to_dl: {
       id: "ll_to_dl",
@@ -110,13 +125,26 @@ function toIsoDate(epochMs: number) {
 export function evaluateEligibility(issueDate: string, today: string) {
   const issue = atUtcMidnight(issueDate);
   const current = atUtcMidnight(today);
-  const daysHeld = Math.max(0, Math.floor((current - issue) / DAY_MS));
-  const earliestDate = toIsoDate(issue + 30 * DAY_MS);
+  const validDate = Number.isFinite(issue) && Number.isFinite(current) && issue <= current;
+  const daysHeld = validDate ? Math.floor((current - issue) / DAY_MS) : 0;
+  const earliestDate = validDate
+    ? toIsoDate(issue + DEMO_RULE_PACK.learnerLicence.minimumDaysHeld * DAY_MS)
+    : "—";
+  const expiryDate = validDate
+    ? toIsoDate(issue + DEMO_RULE_PACK.learnerLicence.validityDays * DAY_MS)
+    : "—";
+  const expired = validDate && daysHeld > DEMO_RULE_PACK.learnerLicence.validityDays;
 
   return {
-    eligible: daysHeld >= 30,
+    eligible:
+      validDate &&
+      daysHeld >= DEMO_RULE_PACK.learnerLicence.minimumDaysHeld &&
+      !expired,
+    validDate,
+    expired,
     daysHeld,
     earliestDate,
+    expiryDate,
   };
 }
 

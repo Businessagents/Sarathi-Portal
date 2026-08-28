@@ -1,6 +1,6 @@
 # LicencePath - Sarathi Portal prototype
 
-LicencePath is a citizen-first, mobile-friendly prototype that demonstrates a clearer journey from a Learner's Licence to a permanent Driving Licence. The GitHub repository is named `Sarathi-Portal`; the public prototype uses the distinct LicencePath name to make its independent status clear.
+LicencePath is a citizen-first, mobile-friendly prototype focused on one problem: helping a first-time Learner's Licence holder determine when an LL-to-DL request is eligible, what evidence is needed, and what happens after an uncertain payment.
 
 [Open the live portal](https://licencepath-sarathi.vercel.app) | [Read the product overview](docs/PORTAL.md) | [Review the submission kit](SUBMISSION.md)
 
@@ -9,7 +9,7 @@ LicencePath is a citizen-first, mobile-friendly prototype that demonstrates a cl
 
 ## Why this portal exists
 
-A first-time or low-tech citizen can struggle to understand eligibility, evidence, payment, appointment and status across separate menus and handoffs. LicencePath replaces that fragmented experience with one guided case that always explains:
+Product hypothesis: first-time applicants may discover eligibility or evidence requirements too late, or mistake a timed-out payment for a failed payment. LicencePath tests whether one guided case can reduce that avoidable rework by explaining:
 
 - what the citizen needs to do next;
 - who owns the next action;
@@ -20,14 +20,18 @@ A first-time or low-tech citizen can struggle to understand eligibility, evidenc
 
 | Capability | What the demo shows |
 | --- | --- |
+| Focused scope | LL-to-DL is the only interactive service; four adjacent services are honestly marked as not included. |
+| Exception scenarios | Reviewer controls load early, expired, invalid, mismatch, unreadable-document, no-slot, failed-test, correction and dispatch-failure paths. |
+| Evidence boundary | The About page reports that no applicant interviews, production-flow audit or failure statistics have yet been completed. |
 | Eligibility before effort | A deterministic Delhi pilot rule checks the Learner's Licence date before documents or payment. |
-| Synthetic record retrieval | A displayed test OTP retrieves a fictional citizen record after explicit consent. |
+| Synthetic record retrieval | A reviewer-controlled test credential retrieves a fictional citizen record after explicit consent. |
 | Evidence guidance | The portal generates safe fixture documents and reports validation feedback. |
 | Payment recovery | A timed-out mock payment is reconciled without creating a duplicate charge. |
-| Idempotent submission | Repeated submission uses one mock application reference. |
-| End-to-end status | Simulated appointment, test, approval, dispatch and delivery events appear in one timeline. |
+| Idempotent submission | A visible interrupted-connection retry uses the same key and returns one mock application reference. |
+| End-to-end status | Provider events are sent from separate reviewer controls; the citizen sees only owner, next action and recovery. |
 | Inclusive access | English, Hindi, larger text, high contrast, reduced-motion support and consented assisted mode are included. |
-| Recovery and grievance | Autosave, resume and a synthetic grievance path are available from every stage. |
+| Recovery and grievance | Explicit continue/new/reset choices, a bookmarkable same-browser case URL, and categorized synthetic grievance status are included. |
+| Mock service layer | Payment and submission mutations go through `/api/demo/cases/[caseId]` and return audit events. |
 
 ## Routes
 
@@ -36,19 +40,22 @@ A first-time or low-tech citizen can struggle to understand eligibility, evidenc
 | `/` | Interactive citizen journey and all mock workflow states |
 | `/about` | English portal purpose, scope, safety boundary and production direction |
 | `/about/hi` | Hindi version of the About page |
+| `/case/[caseId]` | Bookmarkable same-browser synthetic case recovery route |
+| `/api/demo/cases/[caseId]` | Mock case contract plus payment/submission operations and audit results |
 | `/licencepath-demo-payment-receipt.txt` | Synthetic English payment receipt fixture |
 | `/licencepath-demo-payment-receipt-hi.txt` | Synthetic Hindi payment receipt fixture |
 
 ## Demo path
 
-1. Confirm that you will use synthetic data and continue with the prefilled eligible date.
-2. Consent to retrieve Asha Verma's fictional record.
-3. Enter the displayed test OTP: `482916`.
-4. Confirm the record and attach all three generated evidence fixtures.
-5. Simulate payment. When it becomes Pending, reconcile it instead of paying again.
-6. Submit once, choose a simulated test slot and advance mock events to delivery.
+1. Open **Reviewer demo controls**, choose a scenario and reload its synthetic inputs.
+2. Confirm synthetic-data use, then enter or inspect the LL number and date.
+3. At identity, use Reviewer controls to fill the test credential and give consent.
+4. Enter the supplied synthetic address and attach each generated evidence fixture.
+5. Start one payment. After the timeout, reconcile that same reference instead of paying again.
+6. Submit through the mock API, simulate a connection retry and observe the same application reference.
+7. Choose an appointment. On status, send provider events only from Reviewer controls.
 
-To demonstrate eligibility recovery, change the LL issue date to `2026-07-30`. The portal blocks payment on day 29 and explains the earliest valid date.
+Use the scenario selector to demonstrate eligibility waiting, expiry, invalid records, identity mismatch, unreadable evidence, unavailable appointments, failed tests, corrections and dispatch recovery.
 
 ### Synthetic demo identifiers
 
@@ -66,7 +73,8 @@ These values are fictional and cannot be used for any real service.
 - Native responsive CSS with light, dark and high-contrast modes
 - Phosphor icons
 - Deterministic TypeScript domain functions
-- Browser local storage for synthetic demo state
+- Browser local storage for synthetic demo state plus explicit resume/reset controls
+- Next.js Route Handler mock service for payment, submission and audit results
 - Vitest for domain tests
 - Vercel for the public deployment
 
@@ -74,13 +82,14 @@ These values are fictional and cannot be used for any real service.
 
 ```mermaid
 flowchart LR
-  UI[Citizen journey UI] --> CASE[Client-side case controller]
-  CASE --> RULES[Deterministic domain rules]
-  CASE --> STORE[Browser local storage]
-  CASE --> MOCKS[Mock identity, payment, appointment and status adapters]
+  UI[Citizen journey UI] --> API[Mock case Route Handler]
+  UI --> STORE[Browser-only synthetic case]
+  API --> RULES[Deterministic domain rules]
+  API --> AUDIT[Returned audit events]
+  UI --> MOCKS[Reviewer scenario controls]
 ```
 
-The current build is intentionally self-contained. It does not contact government, identity, payment, appointment, dispatch or notification systems.
+The current build is intentionally self-contained. The API route is real application code but not durable infrastructure: case detail still lives only in this browser, while the server returns deterministic mock mutations and audit events. No government, identity, payment, appointment, dispatch or notification system is contacted.
 
 For production, the same citizen journey should use an API or BFF, a durable case and workflow service, PostgreSQL, protected object storage and a durable queue. Every external dependency should sit behind a versioned provider adapter. Payment and submission should remain separate, idempotent state machines with reconciliation and an append-only event trail.
 
@@ -136,10 +145,11 @@ Both commands should pass before pushing. Vercel automatically builds the linked
 ## Documentation
 
 - [Portal overview](docs/PORTAL.md)
+- [Codebase design and module map](docs/CODEBASE.md)
 - [Submission kit](SUBMISSION.md)
 - [Live About page](https://licencepath-sarathi.vercel.app/about)
 - [Hindi About page](https://licencepath-sarathi.vercel.app/about/hi)
 
 ## Project status
 
-This repository is a working hackathon prototype, not a production government service. Its purpose is to demonstrate a safer information flow, explicit recovery patterns and a provider-neutral production direction using only synthetic data.
+This repository is a working hackathon prototype, not a production government service. Its core problem and before/after comparison remain hypotheses until real applicant research and an observed current-flow audit are completed.

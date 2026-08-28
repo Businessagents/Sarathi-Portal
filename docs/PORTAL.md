@@ -2,27 +2,35 @@
 
 ## Product intent
 
-LicencePath demonstrates how a driving licence service can start with a citizen's goal instead of a department menu. The prototype focuses on one guided case from Learner's Licence eligibility to simulated delivery of a permanent Driving Licence.
+LicencePath tests one focused proposition: a first-time applicant should be able to determine LL-to-DL eligibility and evidence needs before payment, then recover safely when payment, submission, appointment or downstream status is uncertain.
 
-The experience is designed for first-time applicants, citizens with limited digital confidence and helpers acting with explicit consent. It keeps the next action, responsible party and recovery route visible throughout the journey.
+LL-to-DL is the only interactive service. Replacement, name, address and mobile changes are displayed as not included in this prototype.
+
+## Evidence status
+
+The problem is a product hypothesis. This project has not completed applicant interviews, an observed production Sarathi journey, or a quantitative failure analysis, and it makes no claim about failure rates. The recommended next step is 5–8 observed sessions with first-time Delhi applicants on the current flow, followed by a comparative usability test of LicencePath.
 
 ## Citizen journey
 
-### Choose the service
+### Start one focused journey
 
-The citizen starts from intent. The current fixture covers a Learner's Licence to permanent Driving Licence journey and keeps the model open to future service types.
+The citizen begins an LL-to-DL request. Adjacent services are disabled and labelled as future research. The before/after table is explicitly a hypothesis to validate, not an audited description of every State portal.
 
 ### Check eligibility
 
-A deterministic Delhi pilot rule checks the issue date before the citizen uploads evidence or reaches payment. An ineligible fixture explains the earliest valid date rather than returning a generic error.
+A deterministic, versioned Delhi demo rule pack evaluates each selected branch before the citizen uploads evidence or reaches payment. The LL-to-DL branch checks the issue date; other branches show their configured demo availability. An ineligible fixture explains the earliest valid date rather than returning a generic error.
+
+### Explore exceptions deliberately
+
+A separate Reviewer controls panel loads ten deterministic scenarios. These include an early or expired LL, invalid record, identity mismatch, unreadable evidence, no appointment slots, failed test, correction request and dispatch failure. Reviewer event controls never appear as the citizen's next action.
 
 ### Retrieve a synthetic record
 
-The citizen provides consent, uses the displayed test OTP and retrieves a fictional record. No real identity provider, DigiLocker account or Sarathi record is contacted.
+The citizen provides consent and enters a test credential supplied through reviewer controls. No real identity provider, DigiLocker account or Sarathi record is contacted.
 
 ### Prepare and review evidence
 
-The prototype creates safe evidence fixtures, validates them and presents a review step before any irreversible action.
+The prototype derives service-specific fields, deduplicates shared evidence into one combined checklist, attaches safe fixtures, validates them and presents a review step before any irreversible action.
 
 ### Reconcile payment
 
@@ -30,15 +38,15 @@ The simulated gateway can return an ambiguous Pending state. The citizen is guid
 
 ### Submit once
 
-Submission uses an idempotency key and returns one mock application reference. Repeated interaction cannot create a second application in the demo.
+Submission uses a visible idempotency key and returns one mock application reference. The reviewer can simulate an interrupted connection and retry; the mock API returns the same reference and records `retry_returned_existing_application`.
 
 ### Book and track
 
-The citizen chooses a simulated test appointment and advances synthetic events through test, approval, dispatch and delivery. The case timeline shows whether the citizen, department or delivery provider owns the next action.
+The citizen chooses a simulated test appointment or sees a no-slot recovery path that preserves the submitted application. Reviewer controls send provider events; the citizen timeline names the owner and next action, including failed-test, correction and dispatch-recovery outcomes.
 
 ### Recover or raise a grievance
 
-Progress is autosaved in browser storage. A citizen can resume the demo or open a synthetic grievance path from any stage without losing acknowledged work.
+Progress is autosaved in browser storage. The start screen requires an explicit choice to continue the saved demo or clear it. A bookmarkable `/case/[caseId]` URL recovers only in the same browser; this limitation is stated. The grievance path captures category, generated evidence, reference, owner and status without inventing a response-time commitment.
 
 ## Experience principles
 
@@ -53,10 +61,14 @@ Progress is autosaved in browser storage. A citizen can resume the demo or open 
 ## What is implemented
 
 - Responsive Next.js citizen journey
+- One focused LL-to-DL journey with adjacent services honestly out of scope
+- Ten deterministic success and exception scenarios
+- Combined, deduplicated evidence and fee review
 - English and Hindi interface content
 - Eligibility and application state domain functions
 - Synthetic identity, evidence, payment, appointment and status fixtures
-- Local autosave and reset
+- Explicit continue/new/reset controls and a same-browser case deep link
+- Mock case API with payment, submission and audit operations
 - Accessibility controls and keyboard-friendly interaction
 - Payment receipt fixtures
 - Automated domain tests
