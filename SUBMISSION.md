@@ -14,14 +14,14 @@ Every simulated dependency is labelled. No live government system, real identity
 
 - 0:00-0:08: State the problem and show the persistent unofficial prototype banner.
 - 0:08-0:18: Open reviewer controls and show the day-29 and expired-licence blocks.
-- 0:18-0:28: Load the eligible inputs, consent and fill the synthetic identity credential from reviewer controls.
+- 0:18-0:28: Start with the prefilled eligible fixture, consent and use the visible synthetic identity credential.
 - 0:28-0:40: Confirm the prefilled record and attach three generated fixtures.
 - 0:40-0:50: Simulate the pending payment, then reconcile without paying twice.
 - 0:50-1:00: Submit, simulate a connection retry and show the same application reference.
 
 ### Second minute: build and decisions
 
-- 1:00-1:15: Show Hindi, larger text, high contrast, assisted mode and grievance access.
+- 1:00-1:15: Show Hindi, keyboard focus, assisted mode, reduced-motion support and grievance access.
 - 1:15-1:30: Show the saved-demo choice, case URL, categorized grievance and reviewer-only provider events.
 - 1:30-1:45: Open About and show the evidence gap, before/after hypothesis and rule governance.
 - 1:45-2:00: Explain that Codex translated the brief into the domain model, accessible UI, recovery paths and automated tests.

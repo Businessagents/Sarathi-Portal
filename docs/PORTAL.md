@@ -26,7 +26,7 @@ A separate Reviewer controls panel loads ten deterministic scenarios. These incl
 
 ### Retrieve a synthetic record
 
-The citizen provides consent and enters a test credential supplied through reviewer controls. No real identity provider, DigiLocker account or Sarathi record is contacted.
+The citizen provides consent and uses a visibly labelled test credential in the identity step. No real identity provider, DigiLocker account or Sarathi record is contacted.
 
 ### Prepare and review evidence
 
@@ -42,7 +42,7 @@ Submission uses a visible idempotency key and returns one mock application refer
 
 ### Book and track
 
-The citizen chooses a simulated test appointment or sees a no-slot recovery path that preserves the submitted application. Reviewer controls send provider events; the citizen timeline names the owner and next action, including failed-test, correction and dispatch-recovery outcomes.
+The citizen chooses a simulated test appointment or sees a no-slot recovery path that preserves the submitted application. The final stage can play the remaining synthetic provider updates and reach an explicit completion state without hiding the fact that citizens would never approve their own outcomes in production. Reviewer controls remain available for failed-test, correction and dispatch-recovery scenarios.
 
 ### Recover or raise a grievance
 

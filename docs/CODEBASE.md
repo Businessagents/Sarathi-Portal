@@ -23,7 +23,7 @@ app/page.tsx
 | Module | Interface callers learn | Implementation hidden behind it | Design assessment |
 | --- | --- | --- | --- |
 | Route module | Render the home or About route | Next.js App Router composition and metadata | Small and appropriately shallow |
-| Citizen journey module | Render `<CitizenJourney />` | Eight stages, bilingual copy, form state, autosave, validation and recovery UI | Deep to the route, but internally too broad |
+| Citizen journey module | Render `<CitizenJourney />` | Eight stages, multilingual entry copy, bilingual deep-journey copy, form state, autosave, validation and recovery UI | Deep to the route, but internally too broad |
 | Sarathi domain module | Configure requests; derive evidence, fees and appointments; transition payment and submission | Versioned rule lookup, deduplication, idempotency and case invariants | The main deep module |
 | About module | Render one language | Product boundary, scale direction and safety copy | Small interface with useful locality |
 

@@ -28,8 +28,8 @@ Product hypothesis: first-time applicants may discover eligibility or evidence r
 | Evidence guidance | The portal generates safe fixture documents and reports validation feedback. |
 | Payment recovery | A timed-out mock payment is reconciled without creating a duplicate charge. |
 | Idempotent submission | A visible interrupted-connection retry uses the same key and returns one mock application reference. |
-| End-to-end status | Provider events are sent from separate reviewer controls; the citizen sees only owner, next action and recovery. |
-| Inclusive access | English, Hindi, larger text, high contrast, reduced-motion support and consented assisted mode are included. |
+| End-to-end status | The final stage exposes clearly labelled synthetic timeline controls, while the citizen view keeps owner, next action and recovery explicit. |
+| Inclusive access | English, Hindi, Tamil, Marathi, Telugu, Kannada and Bengali entry-point translations, reduced-motion support, visible keyboard focus and consented assisted mode are included. English and Hindi continue across the full reviewer journey. |
 | Recovery and grievance | Explicit continue/new/reset choices, a bookmarkable same-browser case URL, and categorized synthetic grievance status are included. |
 | Mock service layer | Payment and submission mutations go through `/api/demo/cases/[caseId]` and return audit events. |
 
@@ -47,13 +47,15 @@ Product hypothesis: first-time applicants may discover eligibility or evidence r
 
 ## Demo path
 
-1. Open **Reviewer demo controls**, choose a scenario and reload its synthetic inputs.
-2. Confirm synthetic-data use, then enter or inspect the LL number and date.
-3. At identity, use Reviewer controls to fill the test credential and give consent.
+1. Confirm synthetic-data use and start the LL-to-DL check; the eligible fixture is prefilled.
+2. Review the synthetic LL number and date, then continue to identity.
+3. Give consent and choose **Use demo credential**.
 4. Enter the supplied synthetic address and attach each generated evidence fixture.
 5. Start one payment. After the timeout, reconcile that same reference instead of paying again.
 6. Submit through the mock API, simulate a connection retry and observe the same application reference.
-7. Choose an appointment. On status, send provider events only from Reviewer controls.
+7. Choose an appointment, then use **Play remaining demo updates** to reach the explicit completion state.
+
+Open **Reviewer demo controls** at the end of any stage only when you want to test an exception path.
 
 Use the scenario selector to demonstrate eligibility waiting, expiry, invalid records, identity mismatch, unreadable evidence, unavailable appointments, failed tests, corrections and dispatch recovery.
 
@@ -97,7 +99,7 @@ For production, the same citizen journey should use an API or BFF, a durable cas
 
 ```text
 app/                         Next.js routes, metadata and global styles
-components/                  Citizen journey and bilingual About content
+components/                  Citizen journey, multilingual entry copy and bilingual About content
 lib/                         Deterministic Sarathi domain functions
 public/                      Synthetic downloadable receipt fixtures
 tests/                       Domain tests
@@ -130,7 +132,7 @@ Both commands should pass before pushing. Vercel automatically builds the linked
 
 - Semantic headings, landmarks and labels support assistive technology.
 - Keyboard focus remains visible and the main content has a skip link.
-- Larger text and high-contrast controls are available in the portal header.
+- Body text, controls and focus states meet a readable baseline without adding persistent display toggles to the portal header.
 - Motion respects the user's reduced-motion preference.
 - English and Hindi About routes have descriptive page titles for route announcements.
 
